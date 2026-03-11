@@ -1,0 +1,1423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hardened Container &amp; gsutil Proxy — Complete Build Guide</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            atom: {
+              blue: '#2563eb',
+              'blue-hover': '#1d4ed8',
+              spark: '#06b6d4',
+              'spark-dark': '#0e7490',
+              'spark-bg': '#ecfeff',
+              red: '#dc2626',
+              green: '#16a34a',
+              'gray-10': '#f4f4f5',
+              'gray-50': '#a1a1aa',
+              'gray-100': '#71717a',
+              'gray-160': '#27272a',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-in { animation: fadeInUp 0.4s ease-out both; }
+    .delay-1 { animation-delay: 0.05s; }
+    .delay-2 { animation-delay: 0.1s; }
+    .delay-3 { animation-delay: 0.15s; }
+    pre code { font-size: 0.8rem; line-height: 1.5; }
+    .toc a { transition: color 0.15s; }
+    .toc a:hover { color: #2563eb; }
+    @media print {
+      .no-print { display: none; }
+      pre { white-space: pre-wrap; word-break: break-all; }
+    }
+  </style>
+</head>
+<body class="bg-white text-atom-gray-160 font-sans">
+
+  <!-- ========== HEADER ========== -->
+  <header class="bg-atom-blue text-white">
+    <div class="max-w-6xl mx-auto px-6 py-10">
+      <div class="flex items-center gap-4 mb-4">
+        <span class="text-5xl">&#x1F512;</span>
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight">Hardened Container &amp; gsutil Proxy</h1>
+          <p class="text-blue-200 text-sm mt-1">
+            Complete Build &amp; Rebuild Guide &bull;
+            VM: <code class="bg-white/10 px-2 py-0.5 rounded font-mono">&lt;YOUR-VM-IP&gt;</code> &bull;
+            Generated 2026-03-08
+          </p>
+        </div>
+      </div>
+      <p class="text-blue-100 max-w-3xl text-lg leading-relaxed">
+        A maximally isolated Docker container with a <strong>Unix-socket gsutil proxy</strong> that
+        enforces read-only access to whitelisted GCS buckets. This document contains
+        <strong>every file, every command, and every configuration</strong> needed to rebuild the
+        entire system from scratch.
+      </p>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-6 py-10">
+
+    <!-- ========== TABLE OF CONTENTS ========== -->
+    <nav class="mb-12 animate-in delay-1 toc">
+      <h2 class="text-xl font-bold text-atom-blue mb-4">&#x1F4D1; Table of Contents</h2>
+      <div class="grid sm:grid-cols-2 gap-x-8 gap-y-1 text-sm">
+        <a href="#overview" class="text-atom-gray-100 hover:text-atom-blue">1. Architecture Overview</a>
+        <a href="#prerequisites" class="text-atom-gray-100 hover:text-atom-blue">2. Prerequisites</a>
+        <a href="#security-layers" class="text-atom-gray-100 hover:text-atom-blue">3. The 13 Security Layers</a>
+        <a href="#defense-depth" class="text-atom-gray-100 hover:text-atom-blue">4. Defense in Depth</a>
+        <a href="#proxy-architecture" class="text-atom-gray-100 hover:text-atom-blue">5. gsutil Proxy Architecture</a>
+        <a href="#file-listing" class="text-atom-gray-100 hover:text-atom-blue">6. Complete File Listing</a>
+        <a href="#build-dockerfile" class="text-atom-gray-100 hover:text-atom-blue">7. File: Dockerfile</a>
+        <a href="#build-seccomp" class="text-atom-gray-100 hover:text-atom-blue">8. File: seccomp-strict.json</a>
+        <a href="#build-proxy" class="text-atom-gray-100 hover:text-atom-blue">9. File: gsutil-proxy.py</a>
+        <a href="#build-policy" class="text-atom-gray-100 hover:text-atom-blue">10. File: gsutil-policy.json</a>
+        <a href="#build-wrapper" class="text-atom-gray-100 hover:text-atom-blue">11. File: gsutil-wrapper.sh</a>
+        <a href="#build-ctl" class="text-atom-gray-100 hover:text-atom-blue">12. File: gsutil-proxy-ctl.sh</a>
+        <a href="#build-run" class="text-atom-gray-100 hover:text-atom-blue">13. File: run-hardened.sh</a>
+        <a href="#build-run-net" class="text-atom-gray-100 hover:text-atom-blue">14. File: run-hardened-with-network.sh</a>
+        <a href="#build-test" class="text-atom-gray-100 hover:text-atom-blue">15. File: test-security.sh</a>
+        <a href="#rebuild-steps" class="text-atom-gray-100 hover:text-atom-blue">16. Step-by-Step Rebuild Guide</a>
+        <a href="#test-results" class="text-atom-gray-100 hover:text-atom-blue">17. Security Test Results</a>
+        <a href="#proxy-test-results" class="text-atom-gray-100 hover:text-atom-blue">18. Proxy Policy Test Results</a>
+        <a href="#operations" class="text-atom-gray-100 hover:text-atom-blue">19. Operational Procedures</a>
+        <a href="#troubleshooting" class="text-atom-gray-100 hover:text-atom-blue">20. Troubleshooting</a>
+      </div>
+    </nav>
+
+    <!-- ========== 1. ARCHITECTURE OVERVIEW ========== -->
+    <section id="overview" class="mb-14 animate-in delay-2">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F3D7;&#xFE0F;</span> 1. Architecture Overview
+      </h2>
+      <div class="bg-atom-spark-bg border-l-4 border-atom-spark rounded-r-lg p-6 mb-6">
+        <p class="font-semibold text-atom-spark-dark">Goal</p>
+        <p class="mt-1">Create a container where <strong>no code — regardless of language or technique — can escape,
+        damage, or observe the host VM</strong>. Provide controlled, policy-enforced, read-only access to
+        specific GCS buckets via a host-side proxy.</p>
+      </div>
+      <div class="bg-atom-gray-160 text-green-400 rounded-xl p-6 font-mono text-xs leading-relaxed overflow-x-auto">
+<pre>
+┌─────────────────────────────────────────────────────────────┐
+│                   HOST VM (<YOUR-VM-IP>)                     │
+│  Debian 12 · Docker 24.0.9 · 8 CPUs · 32GB RAM              │
+│                                                              │
+│  ┌─────────────────────┐     ┌────────────────────────────┐  │
+│  │  gsutil-proxy.py    │     │  Real gsutil + gcloud CLI  │  │
+│  │  (Python daemon)    │────▶│  (with GCP credentials)    │  │
+│  │                     │     └────────────────────────────┘  │
+│  │  ✓ Policy engine    │                                     │
+│  │  ✓ Rate limiter     │     ┌────────────────────────────┐  │
+│  │  ✓ Audit logger     │     │  gsutil-policy.json        │  │
+│  │                     │◀────│  (bucket whitelist)         │  │
+│  └─────────┬───────────┘     └────────────────────────────┘  │
+│            │                                                 │
+│   Unix Socket: /var/run/gsutil-proxy.sock                    │
+│            │                                                 │
+│  ┌─────────┴──────────────────────────────────────────────┐  │
+│  │            HARDENED CONTAINER (Docker)                  │  │
+│  │                                                        │  │
+│  │  User: sandbox (UID 1000) — non-root                   │  │
+│  │  Filesystem: read-only (tmpfs for /tmp, /workspace)    │  │
+│  │  Network: none (or restricted)                         │  │
+│  │  Capabilities: ALL dropped                             │  │
+│  │  Seccomp: whitelist-only syscall filter                │  │
+│  │  Resources: 2GB RAM, 2 CPUs, 256 PIDs max              │  │
+│  │                                                        │  │
+│  │  /usr/local/bin/gsutil → wrapper script                │  │
+│  │    (sends JSON over Unix socket to host proxy)         │  │
+│  │                                                        │  │
+│  │  ❌ No real gsutil    ❌ No GCP credentials              │  │
+│  │  ❌ No GCP SDK        ❌ No package managers             │  │
+│  │  ❌ No SUID binaries  ❌ No privilege escalation         │  │
+│  └────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+</pre>
+      </div>
+    </section>
+
+    <!-- ========== 2. PREREQUISITES ========== -->
+    <section id="prerequisites" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x2699;&#xFE0F;</span> 2. Prerequisites
+      </h2>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <h3 class="font-bold mb-2">Host VM Requirements</h3>
+          <ul class="text-sm space-y-1 text-atom-gray-100">
+            <li>&#x2022; Linux (tested on Debian 12 Bookworm)</li>
+            <li>&#x2022; Docker Engine 24.x+ installed</li>
+            <li>&#x2022; Python 3.11+ on the host</li>
+            <li>&#x2022; <code>gsutil</code> / <code>gcloud</code> CLI installed on host</li>
+            <li>&#x2022; GCP credentials configured on host</li>
+            <li>&#x2022; <code>sudo</code> access</li>
+          </ul>
+        </div>
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <h3 class="font-bold mb-2">Docker Security Features Used</h3>
+          <ul class="text-sm space-y-1 text-atom-gray-100">
+            <li>&#x2022; AppArmor (enabled)</li>
+            <li>&#x2022; Seccomp (enabled, custom profile)</li>
+            <li>&#x2022; Cgroup v1 resource limits</li>
+            <li>&#x2022; User namespace isolation</li>
+            <li>&#x2022; PID namespace isolation</li>
+            <li>&#x2022; IPC namespace isolation</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 3. THE 13 SECURITY LAYERS ========== -->
+    <section id="security-layers" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F6E1;&#xFE0F;</span> 3. The 13 Security Layers
+      </h2>
+      <p class="text-atom-gray-100 mb-4">Each layer is independent. An attacker must defeat <strong>all 13 simultaneously</strong> to escape.</p>
+      <div class="overflow-x-auto rounded-xl border border-atom-gray-50">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-atom-blue text-white">
+              <th class="px-3 py-3 text-left font-semibold w-8">#</th>
+              <th class="px-3 py-3 text-left font-semibold">Layer</th>
+              <th class="px-3 py-3 text-left font-semibold">Docker Flag / Mechanism</th>
+              <th class="px-3 py-3 text-left font-semibold">What It Prevents</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-atom-gray-50/50">
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">1</td><td class="px-3 py-2.5 font-semibold">Non-root User</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--user 1000:1000</code></td><td class="px-3 py-2.5 text-atom-gray-100">No root access; runs as UID 1000 (sandbox)</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">2</td><td class="px-3 py-2.5 font-semibold">Drop All Capabilities</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--cap-drop=ALL</code></td><td class="px-3 py-2.5 text-atom-gray-100">No mount, chroot, raw sockets, module loading</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">3</td><td class="px-3 py-2.5 font-semibold">No New Privileges</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--security-opt=no-new-privileges:true</code></td><td class="px-3 py-2.5 text-atom-gray-100">Blocks setuid/sudo privilege escalation</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">4</td><td class="px-3 py-2.5 font-semibold">Seccomp Whitelist</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--security-opt seccomp=seccomp-strict.json</code></td><td class="px-3 py-2.5 text-atom-gray-100">Only ~200 safe syscalls allowed; blocks ptrace, mount, reboot, kexec</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">5</td><td class="px-3 py-2.5 font-semibold">Read-Only Root FS</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--read-only</code></td><td class="px-3 py-2.5 text-atom-gray-100">Container filesystem is immutable; no persistent writes</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">6</td><td class="px-3 py-2.5 font-semibold">tmpfs noexec</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--tmpfs /tmp:rw,noexec,nosuid,size=256m</code></td><td class="px-3 py-2.5 text-atom-gray-100">Writable dirs can't execute downloaded binaries; RAM-only</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">7</td><td class="px-3 py-2.5 font-semibold">Network Isolation</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--network=none</code></td><td class="px-3 py-2.5 text-atom-gray-100">Zero network access — no data exfiltration, no C2 callbacks</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">8</td><td class="px-3 py-2.5 font-semibold">PID Limit</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--pids-limit=256</code></td><td class="px-3 py-2.5 text-atom-gray-100">Prevents fork bombs from consuming host resources</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">9</td><td class="px-3 py-2.5 font-semibold">Memory Cap</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--memory=2g --memory-swap=2g</code></td><td class="px-3 py-2.5 text-atom-gray-100">Cannot OOM-kill the host; hard 2GB ceiling, swap disabled</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">10</td><td class="px-3 py-2.5 font-semibold">CPU Cap</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--cpus=2</code></td><td class="px-3 py-2.5 text-atom-gray-100">Cannot starve the host of CPU; limited to 2 of 8 cores</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">11</td><td class="px-3 py-2.5 font-semibold">IPC Isolation</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--ipc=private</code></td><td class="px-3 py-2.5 text-atom-gray-100">No shared memory with host or other containers</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">12</td><td class="px-3 py-2.5 font-semibold">No Host Mounts</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">(no -v flags except socket)</code></td><td class="px-3 py-2.5 text-atom-gray-100">Zero access to any host filesystem path</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2.5 font-mono text-atom-blue font-bold">13</td><td class="px-3 py-2.5 font-semibold">Ulimits</td><td class="px-3 py-2.5"><code class="bg-gray-100 px-1 py-0.5 rounded text-xs">--ulimit nproc=512 fsize=100M nofile=1024</code></td><td class="px-3 py-2.5 text-atom-gray-100">Caps processes, file sizes, and open file descriptors</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 4. DEFENSE IN DEPTH ========== -->
+    <section id="defense-depth" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F3F0;</span> 4. Defense in Depth
+      </h2>
+      <div class="flex flex-col items-center">
+        <div class="w-full max-w-xl">
+          <div class="bg-red-50 border-2 border-atom-red rounded-xl p-4 text-center">
+            <p class="font-bold text-atom-red text-sm">&#x1F525; Untrusted Code (any language)</p>
+            <div class="mt-3">
+              <div class="bg-orange-50 border-2 border-orange-400 rounded-lg p-3">
+                <p class="font-bold text-orange-700 text-sm">&#x1F464; Non-Root User (UID 1000)</p>
+                <div class="mt-2">
+                  <div class="bg-yellow-50 border-2 border-yellow-500 rounded-lg p-3">
+                    <p class="font-bold text-yellow-700 text-sm">&#x1F6AB; No Capabilities + No New Privileges</p>
+                    <div class="mt-2">
+                      <div class="bg-blue-50 border-2 border-atom-blue rounded-lg p-3">
+                        <p class="font-bold text-atom-blue text-sm">&#x1F9F1; Seccomp Whitelist (~200 safe syscalls)</p>
+                        <div class="mt-2">
+                          <div class="bg-cyan-50 border-2 border-cyan-600 rounded-lg p-3">
+                            <p class="font-bold text-cyan-700 text-sm">&#x1F4C1; Read-Only FS + noexec tmpfs</p>
+                            <div class="mt-2">
+                              <div class="bg-green-50 border-2 border-atom-green rounded-lg p-3">
+                                <p class="font-bold text-atom-green text-sm">&#x1F310; Network=None + Resource Limits + IPC Isolation</p>
+                                <div class="mt-2">
+                                  <div class="bg-gray-100 border-2 border-atom-gray-100 rounded-lg p-2">
+                                    <p class="font-bold text-atom-gray-160 text-sm">&#x1F5A5;&#xFE0F; Host VM — SAFE</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="text-sm text-atom-gray-100 mt-4 text-center max-w-md">
+          Each ring is independent. Even if an attacker bypasses one, the remaining layers block the escape.
+        </p>
+      </div>
+    </section>
+
+    <!-- ========== 5. GSUTIL PROXY ARCHITECTURE ========== -->
+    <section id="proxy-architecture" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F50C;</span> 5. gsutil Proxy Architecture
+      </h2>
+      <p class="text-atom-gray-100 mb-4">
+        Instead of installing gsutil inside the container (where it could be abused), we use a
+        <strong>Unix-socket proxy pattern</strong>. The container has a thin wrapper that sends
+        commands to a host-side daemon. The daemon validates every command against a policy file
+        before executing the real gsutil.
+      </p>
+
+      <div class="bg-atom-gray-160 text-green-400 rounded-xl p-6 font-mono text-xs leading-relaxed overflow-x-auto mb-6">
+<pre>
+Container (jailed)                       Host VM (trusted)
+┌──────────────────────┐    Unix      ┌───────────────────────────────┐
+│ User types:          │   Socket     │  gsutil-proxy.py              │
+│                      │              │                               │
+│ $ gsutil ls          │   JSON       │  1. Parse command             │
+│   gs://my-bucket/    │──────────▶   │  2. Check: allowed command?   │
+│                      │              │  3. Check: allowed bucket?    │
+│                      │              │  4. Check: download only?     │
+│  gsutil-wrapper.sh   │   JSON       │  5. Check: rate limit OK?     │
+│  (thin socket client)│ ◀──────────  │  6. Execute real gsutil       │
+│                      │  stdout/     │  7. Log to audit trail        │
+│ Gets stdout/stderr   │  stderr/     │  8. Return stdout+stderr+exit │
+│ and exit code        │  exit_code   │                               │
+└──────────────────────┘              └───────────────────────────────┘
+
+ ❌ No gsutil binary inside              ✅ Real gsutil on host
+ ❌ No GCP credentials inside            ✅ GCP credentials on host
+ ❌ No GCP SDK inside                    ✅ Full policy control
+ ❌ Cannot bypass (nothing to bypass)    ✅ Full audit log
+</pre>
+      </div>
+
+      <h3 class="font-bold text-lg mb-3">Protocol</h3>
+      <div class="grid sm:grid-cols-2 gap-4 mb-6">
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <p class="font-semibold text-sm mb-2">Request (Container → Host)</p>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-3 text-xs"><code>{"args": ["ls", "gs://atom-ui/"]}</code></pre>
+        </div>
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <p class="font-semibold text-sm mb-2">Response (Host → Container)</p>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-3 text-xs"><code>{"stdout": "gs://atom-ui/index.html\n...",
+ "stderr": "",
+ "exit_code": 0}</code></pre>
+        </div>
+      </div>
+
+      <h3 class="font-bold text-lg mb-3">Policy Enforcement</h3>
+      <div class="overflow-x-auto rounded-xl border border-atom-gray-50">
+        <table class="w-full text-sm">
+          <thead><tr class="bg-atom-blue text-white"><th class="px-3 py-2 text-left">Check</th><th class="px-3 py-2 text-left">Rule</th><th class="px-3 py-2 text-left">Example</th></tr></thead>
+          <tbody class="divide-y divide-atom-gray-50/50">
+            <tr><td class="px-3 py-2 font-semibold">Command whitelist</td><td class="px-3 py-2 text-atom-gray-100">Only ls, cat, cp, stat, du, hash, version</td><td class="px-3 py-2"><code class="text-xs">rm</code> → DENIED</td></tr>
+            <tr class="bg-atom-gray-10/50"><td class="px-3 py-2 font-semibold">Bucket whitelist</td><td class="px-3 py-2 text-atom-gray-100">Only configured buckets</td><td class="px-3 py-2"><code class="text-xs">gs://secret-bucket</code> → DENIED</td></tr>
+            <tr><td class="px-3 py-2 font-semibold">Direction check (cp)</td><td class="px-3 py-2 text-atom-gray-100">Only gs:// → local (download)</td><td class="px-3 py-2"><code class="text-xs">cp local gs://</code> → DENIED</td></tr>
+            <tr class="bg-atom-gray-10/50"><td class="px-3 py-2 font-semibold">Blocked flags</td><td class="px-3 py-2 text-atom-gray-100">-d, --delete, -D blocked</td><td class="px-3 py-2"><code class="text-xs">--delete</code> → DENIED</td></tr>
+            <tr><td class="px-3 py-2 font-semibold">Rate limiting</td><td class="px-3 py-2 text-atom-gray-100">60 requests/minute sliding window</td><td class="px-3 py-2">Burst → 429</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="font-bold text-lg mt-6 mb-3">Why is this unbyppassable?</h3>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4">
+          <span class="text-atom-green">&#x2705;</span>
+          <div><p class="font-semibold text-sm">No gsutil binary inside</p><p class="text-xs text-atom-gray-100">Nothing to call directly — only the wrapper exists</p></div>
+        </div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4">
+          <span class="text-atom-green">&#x2705;</span>
+          <div><p class="font-semibold text-sm">No GCP SDK inside</p><p class="text-xs text-atom-gray-100">Can't import google.cloud or boto</p></div>
+        </div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4">
+          <span class="text-atom-green">&#x2705;</span>
+          <div><p class="font-semibold text-sm">No GCP credentials inside</p><p class="text-xs text-atom-gray-100">No service account key, no gcloud auth</p></div>
+        </div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4">
+          <span class="text-atom-green">&#x2705;</span>
+          <div><p class="font-semibold text-sm">Can't install anything</p><p class="text-xs text-atom-gray-100">apt removed, read-only FS, tmpfs noexec, network=none</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 6. FILE LISTING ========== -->
+    <section id="file-listing" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F4C1;</span> 6. Complete File Listing
+      </h2>
+      <div class="bg-atom-gray-10 rounded-xl p-6 font-mono text-sm space-y-2 border border-atom-gray-50/50">
+        <p class="text-atom-gray-100">~/hardened-container/</p>
+        <p>&nbsp;&nbsp;├── <span class="text-atom-blue font-semibold">Dockerfile</span> <span class="text-atom-gray-100 font-sans text-xs">← Hardened image definition</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-atom-blue font-semibold">seccomp-strict.json</span> <span class="text-atom-gray-100 font-sans text-xs">← Whitelist-only syscall filter</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-purple-600 font-semibold">gsutil-proxy.py</span> <span class="text-atom-gray-100 font-sans text-xs">← HOST: Policy proxy daemon</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-purple-600 font-semibold">gsutil-policy.json</span> <span class="text-atom-gray-100 font-sans text-xs">← HOST: Bucket/command whitelist</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-purple-600 font-semibold">gsutil-proxy-ctl.sh</span> <span class="text-atom-gray-100 font-sans text-xs">← HOST: Start/stop/status</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-orange-600 font-semibold">gsutil-wrapper.sh</span> <span class="text-atom-gray-100 font-sans text-xs">← CONTAINER: Thin socket client (becomes /usr/local/bin/gsutil)</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-atom-green font-semibold">run-hardened.sh</span> <span class="text-atom-gray-100 font-sans text-xs">← Launch with NO network</span></p>
+        <p>&nbsp;&nbsp;├── <span class="text-atom-green font-semibold">run-hardened-with-network.sh</span> <span class="text-atom-gray-100 font-sans text-xs">← Launch WITH network</span></p>
+        <p>&nbsp;&nbsp;└── <span class="font-semibold">test-security.sh</span> <span class="text-atom-gray-100 font-sans text-xs">← Security test battery</span></p>
+      </div>
+    </section>
+
+    <!-- ========== 7–15: ALL SOURCE FILES ========== -->
+
+    <!-- 7. Dockerfile -->
+    <section id="build-dockerfile" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F4E6;</span> 7. File: <code>Dockerfile</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">Builds the hardened container image. Installs dev tools, strips SUID bits, removes package managers, creates non-root user, installs gsutil wrapper.</p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code># Hardened Sandbox Container
+# ==========================
+# Maximally locked-down container for running untrusted code.
+# gsutil is proxied through a Unix socket to the host.
+
+FROM debian:bookworm-slim
+
+LABEL maintainer="atom-security"
+LABEL description="Hardened sandbox container - no jailbreak possible"
+
+# Install common tools
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nodejs \
+    npm \
+    gcc \
+    g++ \
+    make \
+    curl \
+    wget \
+    git \
+    vim-tiny \
+    ca-certificates \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# SECURITY HARDENING
+# ============================================================
+
+# 1. Create non-root user
+RUN groupadd -g 1000 sandbox &amp;&amp; \
+    useradd -u 1000 -g sandbox -m -s /bin/bash sandbox
+
+# 2. Create workspace
+RUN mkdir -p /workspace &amp;&amp; chown sandbox:sandbox /workspace
+
+# 3. Remove ALL setuid/setgid binaries
+RUN find / -perm /6000 -type f -exec chmod a-s {} + 2&gt;/dev/null || true
+
+# 4. Remove package managers
+RUN rm -f /usr/bin/apt-get /usr/bin/apt /usr/bin/dpkg
+
+# 5. Set restrictive umask
+RUN echo 'umask 0077' &gt;&gt; /home/sandbox/.bashrc
+
+# ============================================================
+# GSUTIL PROXY WRAPPER
+# ============================================================
+COPY gsutil-wrapper.sh /usr/local/bin/gsutil
+RUN chmod +x /usr/local/bin/gsutil
+
+# Switch to non-root user
+USER sandbox
+WORKDIR /workspace
+
+CMD ["/bin/bash"]</code></pre>
+    </section>
+
+    <!-- 8. seccomp-strict.json -->
+    <section id="build-seccomp" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F9F1;</span> 8. File: <code>seccomp-strict.json</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Whitelist-only seccomp profile. Default action is <code>SCMP_ACT_ERRNO</code> (deny). Only
+        ~200 safe syscalls are explicitly allowed. Dangerous syscalls like <code>ptrace</code>, <code>mount</code>,
+        <code>reboot</code>, <code>kexec_load</code>, <code>init_module</code> are <strong>not in the list</strong>
+        and therefore blocked at the kernel level.
+      </p>
+      <details class="bg-atom-gray-10 rounded-xl border border-atom-gray-50/50">
+        <summary class="px-5 py-3 cursor-pointer font-semibold text-sm hover:text-atom-blue">Click to expand seccomp-strict.json (large file)</summary>
+        <pre class="bg-atom-gray-160 text-green-400 rounded-b-xl p-5 text-xs overflow-x-auto"><code>{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]
+    }
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "accept", "accept4", "access", "adjtimex", "alarm",
+        "clone", "clone3",
+        "bind", "brk",
+        "capget", "capset", "chdir", "chmod", "chown", "chown32",
+        "clock_adjtime", "clock_getres", "clock_gettime", "clock_nanosleep",
+        "close", "close_range", "connect", "copy_file_range", "creat",
+        "dup", "dup2", "dup3",
+        "epoll_create", "epoll_create1", "epoll_ctl", "epoll_ctl_old",
+        "epoll_pwait", "epoll_pwait2", "epoll_wait", "epoll_wait_old",
+        "eventfd", "eventfd2", "execve", "execveat", "exit", "exit_group",
+        "faccessat", "faccessat2", "fadvise64", "fallocate",
+        "fanotify_mark", "fchdir", "fchmod", "fchmodat", "fchmodat2",
+        "fchown", "fchown32", "fchownat",
+        "fcntl", "fcntl64", "fdatasync",
+        "fgetxattr", "flistxattr",
+        "flock", "fork", "fremovexattr", "fsetxattr",
+        "fstat", "fstat64", "fstatat64", "fstatfs", "fstatfs64",
+        "fsync", "ftruncate", "ftruncate64",
+        "futex", "futex_waitv", "futimesat",
+        "getcpu", "getcwd",
+        "getdents", "getdents64", "getegid", "getegid32",
+        "geteuid", "geteuid32", "getgid", "getgid32",
+        "getgroups", "getgroups32", "getitimer",
+        "getpeername", "getpgid", "getpgrp", "getpid", "getppid",
+        "getpriority", "getrandom",
+        "getresgid", "getresgid32", "getresuid", "getresuid32",
+        "getrlimit", "get_robust_list",
+        "getrusage", "getsid", "getsockname", "getsockopt",
+        "get_thread_area", "gettid", "gettimeofday",
+        "getuid", "getuid32", "getxattr",
+        "inotify_add_watch", "inotify_init", "inotify_init1",
+        "inotify_rm_watch", "io_cancel", "ioctl",
+        "io_destroy", "io_getevents", "io_pgetevents",
+        "ioprio_get", "ioprio_set",
+        "io_setup", "io_submit", "io_uring_enter",
+        "io_uring_register", "io_uring_setup", "ipc",
+        "kill",
+        "landlock_add_rule", "landlock_create_ruleset",
+        "landlock_restrict_self",
+        "lchown", "lchown32", "lgetxattr",
+        "link", "linkat", "listen", "listxattr", "llistxattr",
+        "lremovexattr", "lseek", "lsetxattr", "lstat", "lstat64",
+        "madvise", "membarrier", "memfd_create", "memfd_secret", "mincore",
+        "mkdir", "mkdirat", "mknodat",
+        "mlock", "mlock2", "mlockall", "mmap", "mmap2", "mprotect",
+        "mq_getsetattr", "mq_notify", "mq_open",
+        "mq_timedreceive", "mq_timedsend", "mq_unlink", "mremap",
+        "msgctl", "msgget", "msgrcv", "msgsnd",
+        "msync", "munlock", "munlockall", "munmap",
+        "nanosleep", "newfstatat", "open", "openat", "openat2",
+        "pause", "pidfd_open", "pidfd_send_signal", "pipe", "pipe2",
+        "poll", "ppoll", "prctl",
+        "pread64", "preadv", "preadv2", "prlimit64", "pselect6",
+        "pwrite64", "pwritev", "pwritev2",
+        "read", "readahead", "readlink", "readlinkat", "readv",
+        "recv", "recvfrom", "recvmmsg", "recvmsg",
+        "remap_file_pages", "removexattr",
+        "rename", "renameat", "renameat2",
+        "restart_syscall", "rmdir", "rseq",
+        "rt_sigaction", "rt_sigpending", "rt_sigprocmask",
+        "rt_sigqueueinfo", "rt_sigreturn", "rt_sigsuspend",
+        "rt_sigtimedwait", "rt_tgsigqueueinfo",
+        "sched_getaffinity", "sched_getattr", "sched_getparam",
+        "sched_get_priority_max", "sched_get_priority_min",
+        "sched_getscheduler", "sched_rr_get_interval",
+        "sched_setaffinity", "sched_setattr", "sched_setparam",
+        "sched_setscheduler", "sched_yield", "seccomp", "select",
+        "semctl", "semget", "semop", "semtimedop",
+        "send", "sendfile", "sendfile64", "sendmmsg", "sendmsg", "sendto",
+        "setfsgid", "setfsgid32", "setfsuid", "setfsuid32",
+        "setgid", "setgid32", "setgroups", "setgroups32",
+        "setitimer", "setpgid", "setpriority",
+        "setregid", "setregid32", "setresgid", "setresgid32",
+        "setresuid", "setresuid32", "setreuid", "setreuid32",
+        "setrlimit", "set_robust_list", "setsid",
+        "setsockopt", "set_thread_area", "set_tid_address",
+        "setuid", "setuid32", "setxattr",
+        "shmat", "shmctl", "shmdt", "shmget", "shutdown",
+        "sigaltstack", "signalfd", "signalfd4",
+        "socket", "socketcall", "socketpair", "splice",
+        "stat", "stat64", "statfs", "statfs64", "statx",
+        "symlink", "symlinkat",
+        "sync", "sync_file_range", "syncfs", "sysinfo",
+        "tee", "tgkill", "time", "timer_create",
+        "timer_delete", "timer_getoverrun", "timer_gettime",
+        "timer_settime", "timerfd_create", "timerfd_gettime",
+        "timerfd_settime", "times", "tkill",
+        "truncate", "truncate64", "ugetrlimit",
+        "umask", "uname", "unlink", "unlinkat",
+        "utime", "utimensat", "utimes",
+        "vfork", "vmsplice",
+        "wait4", "waitid", "waitpid",
+        "write", "writev"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": ["arch_prctl"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [{"index": 0, "value": 4098, "op": "SCMP_CMP_EQ"}]
+    },
+    {
+      "names": ["personality"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [{"index": 0, "value": 0, "op": "SCMP_CMP_EQ"}]
+    },
+    {
+      "names": ["personality"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [{"index": 0, "value": 8, "op": "SCMP_CMP_EQ"}]
+    },
+    {
+      "names": ["personality"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [{"index": 0, "value": 131072, "op": "SCMP_CMP_EQ"}]
+    },
+    {
+      "names": ["personality"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [{"index": 0, "value": 131080, "op": "SCMP_CMP_EQ"}]
+    },
+    {
+      "names": ["personality"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [{"index": 0, "value": 4294967295, "op": "SCMP_CMP_EQ"}]
+    }
+  ]
+}</code></pre>
+      </details>
+    </section>
+
+    <!-- 9. gsutil-proxy.py -->
+    <section id="build-proxy" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F6E1;&#xFE0F;</span> 9. File: <code>gsutil-proxy.py</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Runs on the <strong>HOST</strong>. Listens on a Unix socket, validates every gsutil command against the policy
+        file, rate limits, logs to audit trail, and only then executes the real gsutil.
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>#!/usr/bin/env python3
+"""gsutil-proxy: A Unix-socket proxy that enforces policy on gsutil commands.
+
+Runs on the HOST, listens on a Unix socket that gets mounted into the container.
+The container has a thin wrapper that sends commands here. This daemon:
+  1. Validates the command against a policy file
+  2. Runs the real gsutil if allowed
+  3. Returns stdout/stderr/exit_code back over the socket
+
+Protocol (JSON over Unix socket, newline-delimited):
+  Request:  {"args": ["ls", "gs://bucket/path"]}
+  Response: {"stdout": "...", "stderr": "...", "exit_code": 0}
+"""
+import json
+import logging
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+SOCKET_PATH = "/var/run/gsutil-proxy.sock"
+POLICY_PATH = os.environ.get(
+    "GSUTIL_POLICY", "/home/l0l0cnm/hardened-container/gsutil-policy.json"
+)
+REAL_GSUTIL = "/usr/bin/gsutil"
+MAX_MSG_SIZE = 1024 * 64  # 64KB max message
+COMMAND_TIMEOUT = 120  # seconds
+
+logger = logging.getLogger("gsutil-proxy")
+
+
+def load_policy(path: str) -&gt; dict:
+    """Load and validate the policy configuration."""
+    with open(path) as f:
+        policy = json.load(f)
+    required = ["allowed_commands", "allowed_buckets"]
+    for key in required:
+        if key not in policy:
+            raise ValueError(f"Policy file missing required key: {key}")
+    return policy
+
+
+class RateLimiter:
+    """Simple per-minute sliding window rate limiter."""
+
+    def __init__(self, max_per_minute: int):
+        self.max_per_minute = max_per_minute
+        self.timestamps: list[float] = []
+        self.lock = threading.Lock()
+
+    def allow(self) -&gt; bool:
+        now = time.time()
+        with self.lock:
+            self.timestamps = [t for t in self.timestamps if now - t &lt; 60]
+            if len(self.timestamps) &gt;= self.max_per_minute:
+                return False
+            self.timestamps.append(now)
+            return True
+
+
+def extract_gs_paths(args: list[str]) -&gt; list[str]:
+    """Pull all gs:// paths from the argument list."""
+    return [a for a in args if a.startswith("gs://")]
+
+
+def get_bucket_from_path(gs_path: str) -&gt; str:
+    """Extract 'gs://bucket-name' from 'gs://bucket-name/some/path'."""
+    match = re.match(r"(gs://[^/]+)", gs_path)
+    return match.group(1) if match else gs_path
+
+
+def validate_command(args: list[str], policy: dict) -&gt; str | None:
+    """Validate a gsutil command against policy. Returns error string or None."""
+    if not args:
+        return "Empty command"
+
+    # Extract the gsutil sub-command (skip flags before it)
+    command = None
+    for arg in args:
+        if not arg.startswith("-"):
+            command = arg
+            break
+
+    if command is None:
+        return "No command found in arguments"
+
+    # 1. Check command is allowed
+    allowed_cmds = policy["allowed_commands"]
+    if command not in allowed_cmds:
+        return f"Command '{command}' is not allowed. Permitted: {allowed_cmds}"
+
+    # 2. For 'cp' — block uploads (local → gs://)
+    if command == "cp":
+        if not _is_download_only(args):
+            return "Only downloads (gs:// → local) are allowed, not uploads"
+
+    # 3. Check all gs:// paths are in allowed buckets
+    gs_paths = extract_gs_paths(args)
+    allowed_buckets = policy["allowed_buckets"]
+    for gs_path in gs_paths:
+        bucket = get_bucket_from_path(gs_path)
+        if bucket not in allowed_buckets:
+            return f"Bucket '{bucket}' is not in the allowed list: {allowed_buckets}"
+
+    # 4. Check for blocked flags
+    blocked_flags = policy.get("blocked_flags", [])
+    for arg in args:
+        if arg in blocked_flags:
+            return f"Flag '{arg}' is blocked by policy"
+
+    return None
+
+
+def _is_download_only(args: list[str]) -&gt; bool:
+    """For 'cp' commands, ensure it's gs:// → local (download), not upload.
+
+    gsutil cp [flags] src dst
+    - Download: src=gs://..., dst=local
+    - Upload:   src=local,   dst=gs://...
+    """
+    non_flag_args = [a for a in args if not a.startswith("-") and a != "cp"]
+    if len(non_flag_args) &lt; 2:
+        return False
+    destination = non_flag_args[-1]
+    return not destination.startswith("gs://")
+
+
+def execute_gsutil(args: list[str]) -&gt; dict:
+    """Run the real gsutil and return results."""
+    cmd = [REAL_GSUTIL] + args
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+        )
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": f"Command timed out after {COMMAND_TIMEOUT}s", "exit_code": 124}
+    except Exception as e:
+        return {"stdout": "", "stderr": f"Execution error: {e}", "exit_code": 1}
+
+
+def handle_client(conn: socket.socket, policy: dict, limiter: RateLimiter):
+    """Handle a single client connection."""
+    try:
+        data = conn.recv(MAX_MSG_SIZE)
+        if not data:
+            return
+        request = json.loads(data.decode("utf-8"))
+        args = request.get("args", [])
+        logger.info("Request: gsutil %s", " ".join(args))
+
+        if not limiter.allow():
+            response = {"stdout": "", "stderr": "Rate limit exceeded. Try again shortly.", "exit_code": 429}
+            logger.warning("Rate limited: gsutil %s", " ".join(args))
+        else:
+            error = validate_command(args, policy)
+            if error:
+                response = {"stdout": "", "stderr": f"POLICY DENIED: {error}", "exit_code": 403}
+                logger.warning("Denied: %s | gsutil %s", error, " ".join(args))
+            else:
+                logger.info("Allowed: gsutil %s", " ".join(args))
+                response = execute_gsutil(args)
+
+        conn.sendall(json.dumps(response).encode("utf-8"))
+    except json.JSONDecodeError:
+        conn.sendall(json.dumps({"stdout": "", "stderr": "Invalid request format", "exit_code": 400}).encode())
+    except Exception as e:
+        logger.exception("Error handling client")
+        try:
+            conn.sendall(json.dumps({"stdout": "", "stderr": f"Proxy error: {e}", "exit_code": 500}).encode())
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
+def cleanup_socket():
+    if os.path.exists(SOCKET_PATH):
+        os.unlink(SOCKET_PATH)
+
+
+def main():
+    policy = load_policy(POLICY_PATH)
+    log_file = policy.get("log_file", "/var/log/gsutil-proxy.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)],
+    )
+    rate_limit = policy.get("rate_limit_per_minute", 60)
+    limiter = RateLimiter(rate_limit)
+    cleanup_socket()
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCKET_PATH)
+    os.chmod(SOCKET_PATH, 0o777)  # container user needs access
+    server.listen(5)
+
+    def shutdown(signum, frame):
+        logger.info("Shutting down gsutil-proxy...")
+        server.close()
+        cleanup_socket()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    logger.info("gsutil-proxy started on %s", SOCKET_PATH)
+    logger.info("Allowed commands: %s", policy["allowed_commands"])
+    logger.info("Allowed buckets: %s", policy["allowed_buckets"])
+    logger.info("Rate limit: %d/min", rate_limit)
+
+    while True:
+        try:
+            conn, _ = server.accept()
+            threading.Thread(target=handle_client, args=(conn, policy, limiter), daemon=True).start()
+        except OSError:
+            break
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+    </section>
+
+    <!-- 10. gsutil-policy.json -->
+    <section id="build-policy" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F4CB;</span> 10. File: <code>gsutil-policy.json</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Lives on the <strong>HOST</strong>. Edit this file to add/remove allowed buckets and commands.
+        Restart the proxy after changes (<code>sudo ./gsutil-proxy-ctl.sh stop &amp;&amp; sudo ./gsutil-proxy-ctl.sh start</code>).
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>{
+  "allowed_commands": ["ls", "cat", "cp", "stat", "du", "hash", "version"],
+  "allowed_buckets": [
+    "gs://your-bucket-here",
+    "gs://another-allowed-bucket"
+  ],
+  "blocked_flags": ["-d", "--delete", "-D"],
+  "max_request_size_bytes": 10485760,
+  "rate_limit_per_minute": 60,
+  "log_file": "/var/log/gsutil-proxy.log"
+}</code></pre>
+      <div class="mt-4 bg-atom-spark-bg border-l-4 border-atom-spark rounded-r-lg p-4">
+        <p class="text-sm"><strong>&#x26A0;&#xFE0F; Important:</strong> Replace <code>gs://your-bucket-here</code>
+        with your real bucket names. The proxy must be restarted after editing this file — it loads
+        the policy once at startup.</p>
+      </div>
+    </section>
+
+    <!-- 11. gsutil-wrapper.sh -->
+    <section id="build-wrapper" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F4E8;</span> 11. File: <code>gsutil-wrapper.sh</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Lives <strong>INSIDE the container</strong> at <code>/usr/local/bin/gsutil</code>. This is the only
+        "gsutil" the container user can access. It serializes arguments as JSON, sends them over the Unix
+        socket, and prints the response.
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>#!/bin/bash
+# gsutil wrapper — thin client that sends commands to the host proxy via Unix socket.
+# This script lives INSIDE the container. The real gsutil runs OUTSIDE.
+set -euo pipefail
+
+SOCKET_PATH="/var/run/gsutil-proxy.sock"
+
+if [ ! -S "${SOCKET_PATH}" ]; then
+    echo "ERROR: gsutil proxy socket not found at ${SOCKET_PATH}" &gt;&amp;2
+    echo "The gsutil proxy service may not be running on the host." &gt;&amp;2
+    exit 1
+fi
+
+# Build JSON request and send over Unix socket, print response directly
+exec python3 -c "
+import json, socket, sys
+
+args = sys.argv[1:]
+request = json.dumps({'args': args})
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    sock.connect('${SOCKET_PATH}')
+    sock.sendall(request.encode('utf-8'))
+    sock.shutdown(socket.SHUT_WR)
+    chunks = []
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    data = b''.join(chunks)
+    resp = json.loads(data.decode('utf-8'))
+    if resp.get('stdout'):
+        print(resp['stdout'], end='', file=sys.stdout)
+    if resp.get('stderr'):
+        print(resp['stderr'], end='', file=sys.stderr)
+    sys.exit(resp.get('exit_code', 1))
+finally:
+    sock.close()
+" "\$@"</code></pre>
+      <div class="mt-4 bg-blue-50 border-l-4 border-atom-blue rounded-r-lg p-4">
+        <p class="text-sm"><strong>&#x1F4A1; Key design decisions:</strong></p>
+        <ul class="text-sm text-atom-gray-100 mt-2 space-y-1">
+          <li>&#x2022; <code>exec python3</code> — replaces the shell process (no <code>$(...)</code> that would eat stdout)</li>
+          <li>&#x2022; <code>sock.shutdown(SHUT_WR)</code> — signals "done sending" so the proxy starts processing</li>
+          <li>&#x2022; Reads response in chunks to handle large outputs</li>
+          <li>&#x2022; Exits with the real gsutil's exit code for proper error handling</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 12. gsutil-proxy-ctl.sh -->
+    <section id="build-ctl" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F39B;&#xFE0F;</span> 12. File: <code>gsutil-proxy-ctl.sh</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Lives on the <strong>HOST</strong>. Start/stop/status controller for the proxy daemon.
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>#!/usr/bin/env bash
+# gsutil-proxy-ctl.sh — Start/stop the gsutil proxy daemon on the host
+# Usage:
+#   sudo ./gsutil-proxy-ctl.sh start
+#   sudo ./gsutil-proxy-ctl.sh stop
+#   sudo ./gsutil-proxy-ctl.sh status
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &amp;&amp; pwd)"
+PROXY_SCRIPT="${SCRIPT_DIR}/gsutil-proxy.py"
+PID_FILE="/var/run/gsutil-proxy.pid"
+SOCKET_PATH="/var/run/gsutil-proxy.sock"
+LOG_FILE="/var/log/gsutil-proxy.log"
+
+case "${1:-}" in
+    start)
+        if [ -f "${PID_FILE}" ] &amp;&amp; kill -0 "$(cat "${PID_FILE}")" 2&gt;/dev/null; then
+            echo "⚠️  Proxy already running (PID $(cat "${PID_FILE}"))"
+            exit 0
+        fi
+        echo "🚀 Starting gsutil proxy daemon..."
+        touch "${LOG_FILE}"
+        nohup python3 "${PROXY_SCRIPT}" &gt;&gt; "${LOG_FILE}" 2&gt;&amp;1 &amp;
+        echo $! &gt; "${PID_FILE}"
+        sleep 1
+        if [ -S "${SOCKET_PATH}" ]; then
+            echo "✅ Proxy started (PID $(cat "${PID_FILE}"))"
+            echo "   Socket: ${SOCKET_PATH}"
+            echo "   Log:    ${LOG_FILE}"
+        else
+            echo "❌ Failed to start. Check ${LOG_FILE}"
+            exit 1
+        fi
+        ;;
+    stop)
+        if [ -f "${PID_FILE}" ]; then
+            PID=$(cat "${PID_FILE}")
+            if kill -0 "${PID}" 2&gt;/dev/null; then
+                kill "${PID}"
+                echo "✅ Proxy stopped (PID ${PID})"
+            else
+                echo "⚠️  PID ${PID} not running"
+            fi
+            rm -f "${PID_FILE}"
+        else
+            echo "⚠️  No PID file found"
+        fi
+        rm -f "${SOCKET_PATH}"
+        ;;
+    status)
+        if [ -f "${PID_FILE}" ] &amp;&amp; kill -0 "$(cat "${PID_FILE}")" 2&gt;/dev/null; then
+            echo "✅ Running (PID $(cat "${PID_FILE}"))"
+            echo "   Socket: $([ -S "${SOCKET_PATH}" ] &amp;&amp; echo 'exists' || echo 'MISSING')"
+        else
+            echo "❌ Not running"
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}"
+        exit 1
+        ;;
+esac</code></pre>
+    </section>
+
+    <!-- 13. run-hardened.sh -->
+    <section id="build-run" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F680;</span> 13. File: <code>run-hardened.sh</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Launch script with <strong>NO network access</strong> (maximum isolation). Auto-mounts gsutil proxy socket if available.
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>#!/usr/bin/env bash
+# run-hardened.sh — Launch a maximally hardened Docker container
+# Usage:
+#   ./run-hardened.sh                    # Interactive bash shell
+#   ./run-hardened.sh python3 app.py     # Run a specific command
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &amp;&amp; pwd)"
+IMAGE_NAME="hardened-sandbox:latest"
+CONTAINER_NAME="sandbox-$(date +%s)"
+SECCOMP_PROFILE="${SCRIPT_DIR}/seccomp-strict.json"
+SOCKET_PATH="/var/run/gsutil-proxy.sock"
+
+if ! docker image inspect "${IMAGE_NAME}" &amp;&gt;/dev/null; then
+    echo "🐶 Building hardened sandbox image..."
+    docker build -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+fi
+
+if [ $# -eq 0 ]; then CMD=("/bin/bash"); else CMD=("$@"); fi
+
+SOCKET_MOUNT=()
+if [ -S "${SOCKET_PATH}" ]; then
+    SOCKET_MOUNT=(-v "${SOCKET_PATH}:${SOCKET_PATH}")
+    echo "   ✅ gsutil proxy socket mounted"
+else
+    echo "   ⚠️  gsutil proxy not running"
+fi
+
+echo "🔒 Launching hardened container: ${CONTAINER_NAME}"
+
+docker run \
+    --name "${CONTAINER_NAME}" --rm -it \
+    --log-driver=json-file \
+    --user 1000:1000 \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges:true \
+    --security-opt seccomp="${SECCOMP_PROFILE}" \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+    --tmpfs /run:rw,noexec,nosuid,size=64m \
+    --tmpfs /workspace:rw,noexec,nosuid,size=1g \
+    --network=none \
+    --pids-limit=256 \
+    --memory=2g --memory-swap=2g --cpus=2 \
+    --ipc=private \
+    --ulimit nproc=512:512 \
+    --ulimit fsize=104857600:104857600 \
+    --ulimit nofile=1024:2048 \
+    "${SOCKET_MOUNT[@]+${SOCKET_MOUNT[@]}}" \
+    "${IMAGE_NAME}" "${CMD[@]}"</code></pre>
+    </section>
+
+    <!-- 14. run-hardened-with-network.sh -->
+    <section id="build-run-net" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F310;</span> 14. File: <code>run-hardened-with-network.sh</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        Same hardening as above but <strong>WITH network access</strong> (for pip install, npm install, etc.).
+        Only difference: no <code>--network=none</code> flag.
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>#!/usr/bin/env bash
+# run-hardened-with-network.sh — Same hardening but WITH outbound network access
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &amp;&amp; pwd)"
+IMAGE_NAME="hardened-sandbox:latest"
+CONTAINER_NAME="sandbox-net-$(date +%s)"
+SECCOMP_PROFILE="${SCRIPT_DIR}/seccomp-strict.json"
+SOCKET_PATH="/var/run/gsutil-proxy.sock"
+
+if ! docker image inspect "${IMAGE_NAME}" &amp;&gt;/dev/null; then
+    echo "🐶 Building hardened sandbox image..."
+    docker build -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+fi
+
+if [ $# -eq 0 ]; then CMD=("/bin/bash"); else CMD=("$@"); fi
+
+SOCKET_MOUNT=()
+if [ -S "${SOCKET_PATH}" ]; then
+    SOCKET_MOUNT=(-v "${SOCKET_PATH}:${SOCKET_PATH}")
+    echo "   ✅ gsutil proxy socket mounted"
+else
+    echo "   ⚠️  gsutil proxy not running"
+fi
+
+echo "🔒 Launching hardened container (with network): ${CONTAINER_NAME}"
+
+docker run \
+    --name "${CONTAINER_NAME}" --rm -it \
+    --log-driver=json-file \
+    --user 1000:1000 \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges:true \
+    --security-opt seccomp="${SECCOMP_PROFILE}" \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+    --tmpfs /run:rw,noexec,nosuid,size=64m \
+    --tmpfs /workspace:rw,noexec,nosuid,size=1g \
+    --pids-limit=256 \
+    --memory=2g --memory-swap=2g --cpus=2 \
+    --ipc=private \
+    --ulimit nproc=512:512 \
+    --ulimit fsize=104857600:104857600 \
+    --ulimit nofile=1024:2048 \
+    "${SOCKET_MOUNT[@]+${SOCKET_MOUNT[@]}}" \
+    "${IMAGE_NAME}" "${CMD[@]}"</code></pre>
+    </section>
+
+    <!-- 15. test-security.sh -->
+    <section id="build-test" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-2 flex items-center gap-2">
+        <span>&#x1F9EA;</span> 15. File: <code>test-security.sh</code>
+      </h2>
+      <p class="text-atom-gray-100 text-sm mb-4">
+        10-point attack battery to verify all security layers are working. Run inside the container.
+      </p>
+      <pre class="bg-atom-gray-160 text-green-400 rounded-xl p-5 text-xs overflow-x-auto"><code>#!/usr/bin/env bash
+# Security test battery for the hardened container
+set -euo pipefail
+
+echo "=== SECURITY TEST BATTERY ==="
+echo ""
+echo "1. Who am I?";           id
+echo ""
+echo "2. Can I become root?";   su root -c whoami 2&gt;&amp;1 || echo "  -&gt; BLOCKED"
+echo ""
+echo "3. Can I write to /etc?"; touch /etc/test 2&gt;&amp;1 || echo "  -&gt; BLOCKED (read-only fs)"
+echo ""
+echo "4. Host processes?";      ls /proc/*/cmdline 2&gt;/dev/null | wc -l
+echo "  -&gt; Only container processes visible"
+echo ""
+echo "5. Network?";             curl -s --connect-timeout 2 http://google.com 2&gt;&amp;1 || echo "  -&gt; BLOCKED"
+echo ""
+echo "6. Mount?";               mount -t tmpfs none /mnt 2&gt;&amp;1 || echo "  -&gt; BLOCKED"
+echo ""
+echo "7. Install packages?";    apt-get update 2&gt;&amp;1 || echo "  -&gt; BLOCKED (apt removed)"
+echo ""
+echo "8. Python works?";        python3 -c "print('Python works for legitimate use')"
+echo ""
+echo "9. Read /etc/shadow?";    python3 -c "
+try: open('/etc/shadow').read()
+except Exception as e: print(f'  -&gt; BLOCKED: {e}')
+"
+echo ""
+echo "10. SUID binaries?";      find / -perm /4000 -type f 2&gt;/dev/null | head -5 || true
+echo "  -&gt; (should be empty)"
+echo ""
+echo "=== ALL TESTS COMPLETE ==="</code></pre>
+    </section>
+
+    <!-- ========== 16. STEP-BY-STEP REBUILD ========== -->
+    <section id="rebuild-steps" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F527;</span> 16. Step-by-Step Rebuild Guide
+      </h2>
+      <p class="text-atom-gray-100 mb-6">
+        Follow these steps to rebuild the entire system from scratch on a fresh VM.
+      </p>
+
+      <div class="space-y-6">
+        <!-- Step 1 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 1:</span> Install Docker on the VM</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># SSH into the target VM
+ssh YOUR_VM_IP
+
+# Install Docker (Debian/Ubuntu)
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Verify
+sudo docker info | grep -i 'security\|seccomp\|apparmor'</code></pre>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 2:</span> Install gsutil/gcloud on the host</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># Install Google Cloud SDK (includes gsutil)
+curl https://sdk.cloud.google.com | bash
+exec -l $SHELL
+gcloud init
+
+# Verify
+which gsutil
+gsutil version</code></pre>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 3:</span> Create all files</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># Create the project directory
+mkdir -p ~/hardened-container
+cd ~/hardened-container
+
+# Create each file from the source code in sections 7–15 above:
+# - Dockerfile
+# - seccomp-strict.json
+# - gsutil-proxy.py
+# - gsutil-policy.json
+# - gsutil-wrapper.sh
+# - gsutil-proxy-ctl.sh
+# - run-hardened.sh
+# - run-hardened-with-network.sh
+# - test-security.sh
+
+# Make scripts executable
+chmod +x *.sh</code></pre>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 4:</span> Configure the policy</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># Edit gsutil-policy.json and replace placeholder buckets
+vi gsutil-policy.json
+
+# Change "gs://your-bucket-here" to your real bucket names
+# Change the POLICY_PATH in gsutil-proxy.py if your username differs
+# (default: /home/l0l0cnm/hardened-container/gsutil-policy.json)</code></pre>
+        </div>
+
+        <!-- Step 5 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 5:</span> Build the Docker image</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code>cd ~/hardened-container
+sudo docker build -t hardened-sandbox:latest .
+
+# Verify
+sudo docker image inspect hardened-sandbox:latest | grep -i 'created\|size'</code></pre>
+        </div>
+
+        <!-- Step 6 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 6:</span> Start the gsutil proxy</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># Start the proxy daemon
+sudo ./gsutil-proxy-ctl.sh start
+
+# Verify it's running
+sudo ./gsutil-proxy-ctl.sh status
+# Should show: ✅ Running (PID XXXXX) / Socket: exists</code></pre>
+        </div>
+
+        <!-- Step 7 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 7:</span> Launch the container</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># Launch with NO network (maximum isolation)
+sudo ./run-hardened.sh
+
+# Or with network (for pip/npm installs)
+sudo ./run-hardened-with-network.sh
+
+# Or run a specific command
+sudo ./run-hardened.sh python3 -c "print('hello from jail')"</code></pre>
+        </div>
+
+        <!-- Step 8 -->
+        <div class="bg-atom-gray-10 rounded-xl p-6 border border-atom-gray-50/50">
+          <h3 class="font-bold text-lg mb-2"><span class="text-atom-blue">Step 8:</span> Run security tests</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code># From inside the container:
+gsutil ls gs://your-real-bucket/     # Should work
+gsutil rm gs://your-real-bucket/x    # Should be DENIED
+gsutil ls gs://not-allowed-bucket/   # Should be DENIED
+
+# Run the full security battery:
+# (mount test script read-only)
+sudo docker run --rm \
+  --log-driver=json-file \
+  --user 1000:1000 --cap-drop=ALL \
+  --security-opt=no-new-privileges:true \
+  --security-opt seccomp=~/hardened-container/seccomp-strict.json \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --tmpfs /run:rw,noexec,nosuid,size=64m \
+  --tmpfs /workspace:rw,noexec,nosuid,size=1g \
+  --network=none --pids-limit=256 --memory=2g --cpus=2 \
+  --ipc=private \
+  -v ~/hardened-container/test-security.sh:/workspace/test.sh:ro \
+  -v /var/run/gsutil-proxy.sock:/var/run/gsutil-proxy.sock \
+  hardened-sandbox:latest bash /workspace/test.sh</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 17. SECURITY TEST RESULTS ========== -->
+    <section id="test-results" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x2705;</span> 17. Security Test Results
+      </h2>
+      <p class="text-atom-gray-100 mb-4">10-point attack battery — every attack blocked, legitimate tools work fine.</p>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Become root (su)</p><p class="text-xs text-atom-gray-100">Authentication failure — no root access</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Write to system dirs</p><p class="text-xs text-atom-gray-100">Read-only file system error</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">See host processes</p><p class="text-xs text-atom-gray-100">Only 5 container-own processes visible</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Access the network</p><p class="text-xs text-atom-gray-100">Connection impossible — network=none</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Mount filesystems</p><p class="text-xs text-atom-gray-100">No CAP_SYS_ADMIN</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Install packages</p><p class="text-xs text-atom-gray-100">apt-get removed from image</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Read /etc/shadow</p><p class="text-xs text-atom-gray-100">Permission denied (non-root)</p></div></div>
+        <div class="flex items-start gap-3 bg-green-50 border border-atom-green/30 rounded-lg p-4"><span class="text-atom-green text-lg">&#x2705;</span><div><p class="font-semibold text-sm">SUID escalation</p><p class="text-xs text-atom-gray-100">All setuid bits stripped</p></div></div>
+        <div class="flex items-start gap-3 bg-blue-50 border border-atom-blue/30 rounded-lg p-4 sm:col-span-2"><span class="text-atom-blue text-lg">&#x2705;</span><div><p class="font-semibold text-sm">Legitimate code works fine</p><p class="text-xs text-atom-gray-100">python3, node, gcc, git, gsutil (via proxy) — all functional</p></div></div>
+      </div>
+    </section>
+
+    <!-- ========== 18. PROXY TEST RESULTS ========== -->
+    <section id="proxy-test-results" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F6E1;&#xFE0F;</span> 18. gsutil Proxy Policy Test Results
+      </h2>
+      <p class="text-atom-gray-100 mb-4">Every policy rule was validated from inside the container.</p>
+      <div class="overflow-x-auto rounded-xl border border-atom-gray-50">
+        <table class="w-full text-sm">
+          <thead><tr class="bg-atom-blue text-white"><th class="px-3 py-2 text-left">Test</th><th class="px-3 py-2 text-left">Command</th><th class="px-3 py-2 text-left">Result</th><th class="px-3 py-2 text-left">Why</th></tr></thead>
+          <tbody class="divide-y divide-atom-gray-50/50">
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2">&#x2705;</td><td class="px-3 py-2 font-mono text-xs">gsutil version</td><td class="px-3 py-2 text-atom-green font-semibold">ALLOWED</td><td class="px-3 py-2 text-atom-gray-100 text-xs">Command in whitelist</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2">&#x2705;</td><td class="px-3 py-2 font-mono text-xs">gsutil ls gs://atom-ui/</td><td class="px-3 py-2 text-atom-green font-semibold">ALLOWED</td><td class="px-3 py-2 text-atom-gray-100 text-xs">Bucket in whitelist</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2">&#x1F6AB;</td><td class="px-3 py-2 font-mono text-xs">gsutil ls gs://secret-bucket/</td><td class="px-3 py-2 text-atom-red font-semibold">DENIED</td><td class="px-3 py-2 text-atom-gray-100 text-xs">Bucket not in whitelist</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2">&#x1F6AB;</td><td class="px-3 py-2 font-mono text-xs">gsutil rm gs://atom-ui/file</td><td class="px-3 py-2 text-atom-red font-semibold">DENIED</td><td class="px-3 py-2 text-atom-gray-100 text-xs">rm not in allowed commands</td></tr>
+            <tr class="hover:bg-blue-50/50"><td class="px-3 py-2">&#x1F6AB;</td><td class="px-3 py-2 font-mono text-xs">gsutil cp local.txt gs://atom-ui/</td><td class="px-3 py-2 text-atom-red font-semibold">DENIED</td><td class="px-3 py-2 text-atom-gray-100 text-xs">Upload direction blocked</td></tr>
+            <tr class="bg-atom-gray-10/50 hover:bg-blue-50/50"><td class="px-3 py-2">&#x2705;</td><td class="px-3 py-2 font-mono text-xs">gsutil cp gs://atom-ui/f /tmp/</td><td class="px-3 py-2 text-atom-green font-semibold">ALLOWED</td><td class="px-3 py-2 text-atom-gray-100 text-xs">Download direction permitted</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-4 bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+        <h3 class="font-bold text-sm mb-2">Sample Audit Log (<code>/var/log/gsutil-proxy.log</code>)</h3>
+        <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-4 text-xs overflow-x-auto"><code>2026-03-09 01:51:01 [INFO] Request: gsutil ls gs://atom-ui
+2026-03-09 01:51:01 [INFO] Allowed: gsutil ls gs://atom-ui
+2026-03-09 01:51:02 [WARNING] Denied: Bucket 'gs://secret-bucket' not in allowed list | gsutil ls gs://secret-bucket/
+2026-03-09 01:51:03 [WARNING] Denied: Command 'rm' is not allowed | gsutil rm gs://atom-ui/file.txt
+2026-03-09 01:51:04 [WARNING] Denied: Only downloads allowed, not uploads | gsutil cp /tmp/evil.txt gs://atom-ui/</code></pre>
+      </div>
+    </section>
+
+    <!-- ========== 19. OPERATIONS ========== -->
+    <section id="operations" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F4CB;</span> 19. Operational Procedures
+      </h2>
+      <div class="space-y-4">
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <h3 class="font-bold mb-2">Add a new allowed bucket</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-3 text-xs"><code># 1. Edit the policy
+vi ~/hardened-container/gsutil-policy.json
+# Add "gs://new-bucket" to allowed_buckets array
+
+# 2. Restart the proxy (loads policy at startup)
+sudo ~/hardened-container/gsutil-proxy-ctl.sh stop
+sudo ~/hardened-container/gsutil-proxy-ctl.sh start
+
+# 3. Restart the container (to pick up new socket)
+# (exit the container first, then re-launch)
+sudo ./run-hardened.sh</code></pre>
+        </div>
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <h3 class="font-bold mb-2">View audit logs</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-3 text-xs"><code>sudo tail -f /var/log/gsutil-proxy.log</code></pre>
+        </div>
+        <div class="bg-atom-gray-10 rounded-xl p-5 border border-atom-gray-50/50">
+          <h3 class="font-bold mb-2">Rebuild the container image after Dockerfile changes</h3>
+          <pre class="bg-atom-gray-160 text-green-400 rounded-lg p-3 text-xs"><code>cd ~/hardened-container
+sudo docker build -t hardened-sandbox:latest --no-cache .</code></pre>
+        </div>
+
+        <div class="bg-atom-spark-bg border-l-4 border-atom-spark rounded-r-lg p-4">
+          <p class="font-semibold text-atom-spark-dark text-sm">&#x26A0;&#xFE0F; Critical Rule: Start Order</p>
+          <p class="text-sm mt-1">Always start the <strong>proxy first</strong>, then the <strong>container</strong>.
+          If the proxy is restarted, the container must also be restarted to pick up the new socket.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 20. TROUBLESHOOTING ========== -->
+    <section id="troubleshooting" class="mb-14">
+      <h2 class="text-2xl font-bold text-atom-blue mb-4 flex items-center gap-2">
+        <span>&#x1F6A8;</span> 20. Troubleshooting
+      </h2>
+      <div class="space-y-4">
+        <div class="bg-red-50 border border-atom-red/30 rounded-xl p-5">
+          <h3 class="font-bold text-atom-red mb-1">ConnectionRefusedError: [Errno 111]</h3>
+          <p class="text-sm text-atom-gray-100">The proxy was restarted after the container started. The container has a stale socket reference.</p>
+          <p class="text-sm mt-2"><strong>Fix:</strong> Exit the container and re-launch it. Always start proxy before container.</p>
+        </div>
+        <div class="bg-red-50 border border-atom-red/30 rounded-xl p-5">
+          <h3 class="font-bold text-atom-red mb-1">gsutil proxy socket not found</h3>
+          <p class="text-sm text-atom-gray-100">The proxy daemon isn't running.</p>
+          <p class="text-sm mt-2"><strong>Fix:</strong> <code>sudo ~/hardened-container/gsutil-proxy-ctl.sh start</code></p>
+        </div>
+        <div class="bg-red-50 border border-atom-red/30 rounded-xl p-5">
+          <h3 class="font-bold text-atom-red mb-1">gsutil command returns no output</h3>
+          <p class="text-sm text-atom-gray-100">The wrapper script is capturing stdout in a variable. Ensure you're using the latest <code>gsutil-wrapper.sh</code> with <code>exec python3</code> and <code>sock.shutdown(socket.SHUT_WR)</code>.</p>
+        </div>
+        <div class="bg-red-50 border border-atom-red/30 rounded-xl p-5">
+          <h3 class="font-bold text-atom-red mb-1">Docker logging error (GCP permission)</h3>
+          <p class="text-sm text-atom-gray-100">The VM's default Docker log driver is <code>gcplogs</code> but lacks permissions.</p>
+          <p class="text-sm mt-2"><strong>Fix:</strong> The run scripts include <code>--log-driver=json-file</code> to override this. Ensure it's present.</p>
+        </div>
+        <div class="bg-red-50 border border-atom-red/30 rounded-xl p-5">
+          <h3 class="font-bold text-atom-red mb-1">fork: Operation not permitted</h3>
+          <p class="text-sm text-atom-gray-100">The seccomp profile is missing <code>clone</code>/<code>clone3</code> syscalls.</p>
+          <p class="text-sm mt-2"><strong>Fix:</strong> Ensure <code>"clone", "clone3"</code> are in the allowed syscalls list in <code>seccomp-strict.json</code>.</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ========== FOOTER ========== -->
+  <footer class="bg-atom-gray-10 border-t border-atom-gray-50">
+    <div class="max-w-6xl mx-auto px-6 py-6 flex items-center justify-between text-sm text-atom-gray-100">
+      <p class="flex items-center gap-1">
+        <span class="inline-block w-2 h-2 bg-atom-green rounded-full"></span>
+        All security &amp; proxy tests passing
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -1,0 +1,60 @@
+# Hardened Sandbox Container
+# ==========================
+# Maximally locked-down container for running untrusted code.
+# gsutil is proxied through a Unix socket to the host.
+
+FROM debian:bookworm-slim
+
+LABEL maintainer="atom-security"
+LABEL description="Hardened sandbox container - no jailbreak possible"
+
+# Install common tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nodejs \
+    npm \
+    gcc \
+    g++ \
+    make \
+    curl \
+    wget \
+    git \
+    vim-tiny \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# SECURITY HARDENING
+# ============================================================
+
+# 1. Create non-root user
+RUN groupadd -g 1000 sandbox && \
+    useradd -u 1000 -g sandbox -m -s /bin/bash sandbox
+
+# 2. Create workspace
+RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
+
+# 3. Remove ALL setuid/setgid binaries
+RUN find / -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
+
+# 4. Remove package managers
+RUN rm -f /usr/bin/apt-get /usr/bin/apt /usr/bin/dpkg
+
+# 5. Set restrictive umask
+RUN echo 'umask 0077' >> /home/sandbox/.bashrc
+
+# ============================================================
+# GSUTIL PROXY WRAPPER
+# ============================================================
+# Install the thin wrapper that talks to the host proxy via Unix socket.
+# The real gsutil + credentials live OUTSIDE the container.
+COPY gsutil-wrapper.sh /usr/local/bin/gsutil
+RUN chmod +x /usr/local/bin/gsutil
+
+# Switch to non-root user
+USER sandbox
+WORKDIR /workspace
+
+CMD ["/bin/bash"]
