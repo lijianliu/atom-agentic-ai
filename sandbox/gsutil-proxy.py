@@ -25,7 +25,7 @@ from pathlib import Path
 
 SOCKET_PATH = "/var/run/gsutil-proxy.sock"
 POLICY_PATH = os.environ.get(
-    "GSUTIL_POLICY", "/home/l0l0cnm/hardened-container/gsutil-policy.json"
+    "GSUTIL_POLICY", str(Path(__file__).parent / "gsutil-policy.json")
 )
 REAL_GSUTIL = "/usr/bin/gsutil"
 MAX_MSG_SIZE = 1024 * 64  # 64KB max message
@@ -238,7 +238,7 @@ def main():
         ],
     )
 
-    rate_limit = policy.get("rate_limit_per_minute", 60)
+    rate_limit = policy.get("rate_limit_per_minute", 600)
     limiter = RateLimiter(rate_limit)
 
     cleanup_socket()

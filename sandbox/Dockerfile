@@ -3,16 +3,13 @@
 # Maximally locked-down container for running untrusted code.
 # gsutil is proxied through a Unix socket to the host.
 
-FROM debian:bookworm-slim
+FROM python:3.12-slim-bookworm
 
 LABEL maintainer="atom-security"
 LABEL description="Hardened sandbox container - no jailbreak possible"
 
 # Install common tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
     nodejs \
     npm \
     gcc \
@@ -23,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     vim-tiny \
     ca-certificates \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
