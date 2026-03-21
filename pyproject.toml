@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "atomai"
+version = "0.1.0"
+description = "Atom-based AI agent for Hubble GCS partition analysis"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # LLM Gateway via Anthropic — same version pin as atom
+    "pydantic-ai-slim[anthropic,mcp]>=1.56.0",
+    "httpx>=0.24.1",
+    "python-dotenv>=1.0.0",
+    "rich>=13.4.2",
+]
+authors = [
+    {name = "Muniandi Baskaran", email = ""}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+atomai = "agent.agent:main"
+
+[tool.hatch.build]
+packages = ["agent"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.logfire]
+ignore_no_config = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.23.1",
+    "ruff>=0.11.11",
+]

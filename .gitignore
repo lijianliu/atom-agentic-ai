@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv — lock file is generated locally (contains env-specific index URLs)
+uv.lock
+
+# Testing & coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Environment variables / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs / tmp output
+llm-logs/
+/tmp/
+*.log
+
+# Data files with potential PII (never commit these)
+*.csv
+*.xlsx
+*.xls
+*.sqlite
+*.db
