@@ -4,10 +4,12 @@ set -euo pipefail
 # ---- Parse flags ----
 SKIP_UPDATE=false
 VERBOSE=false
+USE_OPENAI=false
 for arg in "$@"; do
   case "$arg" in
     --skip-update|-s) SKIP_UPDATE=true ;;
     --verbose|-v)     VERBOSE=true ;;
+    --openai)         USE_OPENAI=true ;;
   esac
 done
 
@@ -39,10 +41,11 @@ else
   echo "Skipping dependency update (--skip-update)"
 fi
 
+# ---- Build flags for agent ----
+AGENT_FLAGS=""
+[ "$VERBOSE" = true ]    && AGENT_FLAGS="$AGENT_FLAGS --verbose"
+[ "$USE_OPENAI" = true ] && AGENT_FLAGS="$AGENT_FLAGS --openai"
+
 # ---- Run AtomAI ----
 echo "Starting AtomAI..."
-if [ "$VERBOSE" = true ]; then
-  .venv/bin/python -m agent.agent --verbose
-else
-  .venv/bin/python -m agent.agent
-fi
+.venv/bin/python -m agent.agent $AGENT_FLAGS

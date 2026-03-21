@@ -14,7 +14,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from agent.model import build_model
+from agent.model import build_model, build_openai_model
 
 
 # Security: Only allow file operations within /tmp
@@ -31,20 +31,10 @@ def _validate_path(path: str) -> Path:
         raise ValueError(f"Access denied: path must be within /tmp. Got: {resolved}")
     return resolved
 
-agent = Agent(
-    model=build_model(),
-    model_settings={
-        "max_tokens": 127000,  # 10MB
-        # Anthropic prompt caching - saves tokens & latency by caching static content
-        "anthropic_cache_instructions": True,  # Cache the system prompt
-        "anthropic_cache_tool_definitions": True,  # Cache tool definitions
-        "anthropic_cache_messages": True,  # Cache conversation history
-    },
-    system_prompt=get_system_prompt()
-)
+# ---------------------------------------------------------------------------
+# Tools — plain functions, registered via Agent(tools=[...]) at build time
+# ---------------------------------------------------------------------------
 
-
-@agent.tool_plain
 def execute_script(command: str) -> str:
     """Execute a shell command and return stdout/stderr."""
     print(f">>> execute_script(\"{' '.join(command.split())[:120]}\")")
@@ -53,7 +43,7 @@ def execute_script(command: str) -> str:
         shell=True,
         capture_output=True,
         text=True,
-        timeout=60
+        timeout=60,
     )
     output = f"Exit Code: {result.returncode}\n"
     output += f"STDOUT:\n{result.stdout}\n"
@@ -62,7 +52,6 @@ def execute_script(command: str) -> str:
     return output
 
 
-@agent.tool_plain
 def read_file(path: str) -> str:
     """Read contents of a file. Path must be within /tmp."""
     print(f'>>> read_file("{path}")')
@@ -79,13 +68,11 @@ def read_file(path: str) -> str:
         return f"Error reading file: {e}"
 
 
-@agent.tool_plain
 def write_file(path: str, content: str) -> str:
     """Write content to a file. Path must be within /tmp."""
     print(f'>>> write_file("{path}", <{len(content)} chars>)')
     try:
         resolved = _validate_path(path)
-        # Create parent directories if needed
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content)
         return f"Successfully wrote {len(content)} characters to {resolved}"
@@ -95,23 +82,22 @@ def write_file(path: str, content: str) -> str:
         return f"Error writing file: {e}"
 
 
-@agent.tool_plain
-def list_files(path: str = "/tmp") -> str:
+def list_dir(path: str = "/tmp") -> str:
     """List files and directories at a path. Path must be within /tmp."""
-    print(f'>>> list_files("{path}")')
+    print(f'>>> list_dir("{path}")')
     try:
         resolved = _validate_path(path)
         if not resolved.exists():
             return f"Error: Path not found: {resolved}"
         if not resolved.is_dir():
             return f"Error: Not a directory: {resolved}"
-        
+
         entries = []
         for entry in sorted(resolved.iterdir()):
             entry_type = "[DIR]" if entry.is_dir() else "[FILE]"
             size = entry.stat().st_size if entry.is_file() else "-"
             entries.append(f"{entry_type} {entry.name} ({size} bytes)")
-        
+
         if not entries:
             return f"Directory {resolved} is empty."
         return f"Contents of {resolved}:\n" + "\n".join(entries)
@@ -119,6 +105,46 @@ def list_files(path: str = "/tmp") -> str:
         return f"Error: {e}"
     except Exception as e:
         return f"Error listing directory: {e}"
+
+
+# Why not @agent.tool_plain decorators?
+# ---------------------------------------------------------------------------
+# @agent.tool_plain binds tools to a specific agent instance at *import time*
+# (i.e. when the decorator line executes, before __main__ runs).
+#
+# Our agent instance is created inside build_agent(), which is called in
+# __main__ *after* CLI args are parsed — so the instance doesn't exist yet
+# when the module is being loaded. Using decorators here would require a
+# module-level `agent = build_agent()` call, but at that point we haven't
+# parsed --openai yet, creating a chicken-and-egg problem.
+#
+# Passing _TOOLS explicitly to Agent(tools=_TOOLS) in build_agent() keeps
+# tools as plain functions and wires them to whichever instance is actually
+# constructed at runtime — clean, explicit, no import-order surprises.
+# ---------------------------------------------------------------------------
+_TOOLS = [execute_script, read_file, write_file, list_dir]
+
+
+def build_agent(use_openai: bool = False) -> Agent:
+    """Build the agent with the appropriate model and all tools."""
+    if use_openai:
+        return Agent(
+            model=build_openai_model(),
+            model_settings={"max_tokens": 127000},
+            system_prompt=get_system_prompt(),
+            tools=_TOOLS,
+        )
+    return Agent(
+        model=build_model(),
+        model_settings={
+            "max_tokens": 127000,
+            "anthropic_cache_instructions": True,
+            "anthropic_cache_tool_definitions": True,
+            "anthropic_cache_messages": True,
+        },
+        system_prompt=get_system_prompt(),
+        tools=_TOOLS,
+    )
 
 
 from pydantic_ai._agent_graph import CallToolsNode, End, ModelRequestNode, UserPromptNode
@@ -155,7 +181,7 @@ def print_response_parts(response: ModelResponse, verbose: bool) -> None:
                 print(f"\n🔧 Tool Call: {part.tool_name}({args_str})")
 
 
-async def main(verbose: bool = False) -> None:
+async def main(agent: Agent, verbose: bool = False) -> None:
     print("🤖 Mini Agent Started. Type 'exit' to quit. Press Ctrl+C to cancel input.")
     if verbose:
         print("   (verbose mode enabled)")
@@ -214,9 +240,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose mode to show all node details",
     )
+    parser.add_argument(
+        "--openai",
+        action="store_true",
+        help="Use OpenAI directly via PERSONAL_OPENAI_API_KEY instead of the LLM Gateway",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(main(verbose=args.verbose))
+    agent = build_agent(use_openai=args.openai)
+    asyncio.run(main(agent, verbose=args.verbose))

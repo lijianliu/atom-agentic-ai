@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     # LLM Gateway via Anthropic — same version pin as atom
-    "pydantic-ai-slim[anthropic,mcp]>=1.56.0",
+    "pydantic-ai-slim[anthropic,mcp,openai]>=1.56.0",
     "httpx>=0.24.1",
     "python-dotenv>=1.0.0",
     "rich>=13.4.2",

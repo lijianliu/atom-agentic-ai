@@ -66,6 +66,40 @@ def build_model() -> AnthropicModel:
     return AnthropicModel(model_name=_MODEL_NAME, provider=provider)
 
 
+def build_openai_model(model_name: str = "gpt-4.1"):
+    """Build an OpenAIResponsesModel using PERSONAL_OPENAI_API_KEY.
+
+    Environment variables:
+        PERSONAL_OPENAI_API_KEY   Required. Your personal OpenAI API key.
+
+    Raises:
+        SystemExit: When PERSONAL_OPENAI_API_KEY is not set.
+    """
+    try:
+        from pydantic_ai.models.openai import OpenAIResponsesModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+    except ImportError:
+        print(
+            "ERROR: OpenAI support requires the 'openai' package.\n"
+            "Install it with:\n"
+            "  pip install pydantic-ai-slim[openai]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    api_key = os.environ.get("PERSONAL_OPENAI_API_KEY", "").strip()
+    if not api_key:
+        print(
+            "ERROR: PERSONAL_OPENAI_API_KEY is not set.\n"
+            "Export it in your shell:\n"
+            "  export PERSONAL_OPENAI_API_KEY=<your-key>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    provider = OpenAIProvider(api_key=api_key)
+    return OpenAIResponsesModel(model_name, provider=provider)
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
