@@ -32,9 +32,14 @@ from pydantic_ai.mcp import MCPServerSSE
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
+    ToolCallPartDelta,
     UserPromptPart,
 )
 
@@ -100,46 +105,6 @@ def build_agent(
 
 
 # ---------------------------------------------------------------------------
-# Pretty-printing helpers
-# ---------------------------------------------------------------------------
-
-from pydantic_ai._agent_graph import CallToolsNode, End, ModelRequestNode, UserPromptNode  # noqa: E402
-
-
-def _print_request(request: ModelRequest, verbose: bool) -> None:
-    for part in request.parts:
-        if isinstance(part, UserPromptPart):
-            print(
-                f"  \U0001f4e4 [UserPrompt] {part.content}"
-                if verbose
-                else f"\n\U0001f4ac Request: {part.content}"
-            )
-
-
-def _print_response(response: ModelResponse, verbose: bool) -> None:
-    for part in response.parts:
-        if isinstance(part, ThinkingPart):
-            print(
-                f"  \U0001f9e0 [Thinking] {part.content}"
-                if verbose
-                else f"\n\U0001f9e0 Thinking:\n{part.content}"
-            )
-        elif isinstance(part, TextPart):
-            print(
-                f"  \U0001f4ac [Text] {part.content}"
-                if verbose
-                else f"\n\U0001f4ac Response:\n{part.content}"
-            )
-        elif isinstance(part, ToolCallPart):
-            snippet = str(part.args)[:120]
-            print(
-                f"  \U0001f527 [ToolCall] {part.tool_name}({snippet})"
-                if verbose
-                else f"\n\U0001f527 Tool: {part.tool_name}({snippet})"
-            )
-
-
-# ---------------------------------------------------------------------------
 # Connectivity check
 # ---------------------------------------------------------------------------
 
@@ -194,25 +159,50 @@ async def main(
             async def _run() -> None:
                 async with agent.iter(prompt, message_history=message_history) as run:
                     async for node in run:
-                        if verbose:
-                            match node:
-                                case ModelRequestNode(request=req):
-                                    _print_request(req, verbose=True)
-                                case CallToolsNode(model_response=resp):
-                                    _print_response(resp, verbose=True)
-                                case End(data=data):
-                                    print(f"VERBOSE> \u2705 [End] {str(data)[:200]}")
-                                case _:
-                                    print(f"VERBOSE> [{type(node).__name__}]")
-                        else:
-                            match node:
-                                case CallToolsNode(model_response=resp):
-                                    _print_response(resp, verbose=False)
-                                case _:
-                                    pass
-                result = run.result
-                message_history.extend(result.new_messages())
-                print(f"\n\U0001f916 Agent: {result.output}")
+                        if Agent.is_model_request_node(node):
+                            # --- Stream the model's response token-by-token ---
+                            async with node.stream(run.ctx) as stream:
+                                async for event in stream:
+                                    if isinstance(event, PartStartEvent):
+                                        # A new response part is beginning;
+                                        # the part may already carry initial content.
+                                        if isinstance(event.part, ThinkingPart):
+                                            print("\n\U0001f9e0 Thinking: ", end="", flush=True)
+                                            if event.part.content:
+                                                print(event.part.content, end="", flush=True)
+                                        elif isinstance(event.part, TextPart):
+                                            print("\n\U0001f4ac ", end="", flush=True)
+                                            if event.part.content:
+                                                print(event.part.content, end="", flush=True)
+                                        elif isinstance(event.part, ToolCallPart):
+                                            args_str = str(event.part.args) if event.part.args else ""
+                                            print(f"\n\U0001f527 Tool: {event.part.tool_name}({args_str}", end="", flush=True)
+                                    elif isinstance(event, PartDeltaEvent):
+                                        if isinstance(event.delta, TextPartDelta):
+                                            print(event.delta.content_delta, end="", flush=True)
+                                        elif isinstance(event.delta, ThinkingPartDelta):
+                                            if verbose:
+                                                print(event.delta.content_delta, end="", flush=True)
+                                        elif isinstance(event.delta, ToolCallPartDelta):
+                                            print(event.delta.args_delta, end="", flush=True)
+                                print()  # newline after each streamed model turn
+
+                        elif Agent.is_call_tools_node(node):
+                            # Tools are being executed — results will feed
+                            # back into the next ModelRequestNode automatically.
+                            if verbose:
+                                for part in node.model_response.parts:
+                                    if isinstance(part, ToolCallPart):
+                                        snippet = str(part.args)[:120]
+                                        print(f"  \U0001f527 [Executing] {part.tool_name}({snippet})")
+
+                        elif Agent.is_end_node(node):
+                            if verbose:
+                                print(f"VERBOSE> \u2705 [End] {str(node.data)[:200]}")
+
+                    result = run.result
+                    message_history.extend(result.new_messages())
+                    print(f"\n\U0001f916 Agent: {result.output}")
 
             task = asyncio.ensure_future(_run())
 
