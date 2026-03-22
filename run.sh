@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run-atom-ai-mcp.sh — Run AtomAI agent with tools in hardened Docker sandbox
+# run.sh — Run AtomAI agent with tools in hardened Docker sandbox
 # =============================================================================
 # This script:
 #   1. Ensures the hardened Docker MCP sandbox is running
-#   2. Starts the local atom agent that connects to the MCP server
+#   2. Starts the agent that connects to the MCP server
 #
 # Usage:
-#   ./run-atom-ai-mcp.sh                     # Default (LLM Gateway)
-#   ./run-atom-ai-mcp.sh --openai            # Use OpenAI
-#   ./run-atom-ai-mcp.sh --verbose           # Verbose mode
-#   ./run-atom-ai-mcp.sh --skip-update       # Skip uv sync
-#   ./run-atom-ai-mcp.sh --no-sandbox        # Skip sandbox auto-start
+#   ./run.sh                     # Default (LLM Gateway)
+#   ./run.sh --openai            # Use OpenAI
+#   ./run.sh --verbose           # Verbose mode
+#   ./run.sh --skip-update       # Skip uv sync
+#   ./run.sh --no-sandbox        # Skip sandbox auto-start
 # =============================================================================
 set -euo pipefail
 
@@ -98,4 +98,4 @@ echo ""
 echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
 echo "   MCP URL: ${MCP_URL}"
 echo ""
-.venv/bin/python -m agent.agent_mcp $AGENT_FLAGS
+.venv/bin/python -m agent.agent $AGENT_FLAGS

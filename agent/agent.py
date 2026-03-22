@@ -1,11 +1,35 @@
+"""
+agent.py — Atom Agent backed by MCP tools in a hardened Docker sandbox
+======================================================================
+All tools (execute_command, read_file, write_file, append_file,
+list_dir, delete_file) run INSIDE the sandbox container via MCP.
+Nothing executes on the host.
+
+Architecture:
+
+  HOST                              CONTAINER (sandbox-mcp)
+  ──────────────────            ────────────────────────────────
+  agent.py                          mcp_server.py
+    MCPServerSSE ─ HTTP/SSE ───▶ uvicorn 0.0.0.0:9100
+    127.0.0.1:9100/sse              tools: execute_command, read_file ...
+
+Usage:
+  bash sandbox/run-mcp-macos.sh     # 1. start the sandbox
+  python -m agent.agent             # 2. run the agent
+  python -m agent.agent --openai
+  python -m agent.agent --verbose
+  python -m agent.agent --mcp-url http://127.0.0.1:9100/sse
+  python -m agent.agent --socket /tmp/mcp-sandbox/mcp.sock  # legacy UDS
+"""
+from __future__ import annotations
+
 import argparse
 import asyncio
-import os
 import signal
-import subprocess
-from pathlib import Path
 
+import httpx
 from pydantic_ai import Agent
+from pydantic_ai.mcp import MCPServerSSE
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -17,266 +41,260 @@ from pydantic_ai.messages import (
 
 from agent.model import build_model, build_openai_model
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-# Security: Only allow file operations within /tmp
-SAFE_ROOT = Path("/tmp/atom").resolve()
+DEFAULT_MCP_URL = "http://127.0.0.1:9100/sse"
+DEFAULT_SOCKET = "/tmp/mcp-sandbox/mcp.sock"  # legacy UDS fallback
+
+
+# ---------------------------------------------------------------------------
+# MCP server constructors
+# ---------------------------------------------------------------------------
+
+def _build_tcp_mcp_server(url: str) -> MCPServerSSE:
+    """MCP over plain TCP — the normal case."""
+    return MCPServerSSE(
+        url=url,
+        http_client=httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=300.0),
+        ),
+    )
+
+
+def _build_uds_mcp_server(socket_path: str) -> MCPServerSSE:
+    """MCP over Unix domain socket — legacy Option 3."""
+    transport = httpx.AsyncHTTPTransport(uds=socket_path)
+    return MCPServerSSE(
+        url="http://sandbox/sse",
+        http_client=httpx.AsyncClient(
+            transport=transport,
+            base_url="http://sandbox",
+            timeout=httpx.Timeout(30.0, read=300.0),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agent factory
+# ---------------------------------------------------------------------------
 
 def get_system_prompt() -> str:
-        """Get Pulse agent's system prompt with TEX team knowledge."""
-        return '''you are a good agent'''
-
-def _validate_path(path: str) -> Path:
-    """Resolve path and ensure it's within /tmp. Raises ValueError if not."""
-    resolved = Path(path).resolve()
-    if not (resolved == SAFE_ROOT or str(resolved).startswith(str(SAFE_ROOT) + os.sep)):
-        raise ValueError(f"Access denied: path must be within /tmp. Got: {resolved}")
-    return resolved
-
-# ---------------------------------------------------------------------------
-# Tools — plain functions, registered via Agent(tools=[...]) at build time
-# ---------------------------------------------------------------------------
-
-def execute_script(command: str) -> str:
-    """Execute a shell command and return stdout/stderr."""
-    print(f">>> execute_script(\"{' '.join(command.split())[:120]}\")")
-    result = subprocess.run(
-        command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
+    return (
+        "You are a helpful agent. Your tools (execute_command, read_file, "
+        "write_file, append_file, delete_file, list_dir) run inside a hardened "
+        "Docker sandbox with no network access. File paths are relative to "
+        "/workspace inside the sandbox."
     )
-    output = f"Exit Code: {result.returncode}\n"
-    output += f"STDOUT:\n{result.stdout}\n"
-    if result.stderr:
-        output += f"STDERR:\n{result.stderr}\n"
-    return output
 
 
-def read_file(path: str) -> str:
-    """Read contents of a file. Path must be within /tmp."""
-    print(f'>>> read_file("{path}")')
-    try:
-        resolved = _validate_path(path)
-        if not resolved.exists():
-            return f"Error: File not found: {resolved}"
-        if not resolved.is_file():
-            return f"Error: Not a file: {resolved}"
-        return resolved.read_text()
-    except ValueError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error reading file: {e}"
-
-
-def write_file(path: str, content: str) -> str:
-    """Write content to a file. Path must be within /tmp."""
-    print(f'>>> write_file("{path}", <{len(content)} chars>)')
-    try:
-        resolved = _validate_path(path)
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content)
-        return f"Successfully wrote {len(content)} characters to {resolved}"
-    except ValueError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error writing file: {e}"
-
-
-def list_dir(path: str = "/tmp") -> str:
-    """List files and directories at a path. Path must be within /tmp."""
-    print(f'>>> list_dir("{path}")')
-    try:
-        resolved = _validate_path(path)
-        if not resolved.exists():
-            return f"Error: Path not found: {resolved}"
-        if not resolved.is_dir():
-            return f"Error: Not a directory: {resolved}"
-
-        entries = []
-        for entry in sorted(resolved.iterdir()):
-            entry_type = "[DIR]" if entry.is_dir() else "[FILE]"
-            size = entry.stat().st_size if entry.is_file() else "-"
-            entries.append(f"{entry_type} {entry.name} ({size} bytes)")
-
-        if not entries:
-            return f"Directory {resolved} is empty."
-        return f"Contents of {resolved}:\n" + "\n".join(entries)
-    except ValueError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error listing directory: {e}"
-
-
-# Why not @agent.tool_plain decorators?
-# ---------------------------------------------------------------------------
-# @agent.tool_plain binds tools to a specific agent instance at *import time*
-# (i.e. when the decorator line executes, before __main__ runs).
-#
-# Our agent instance is created inside build_agent(), which is called in
-# __main__ *after* CLI args are parsed — so the instance doesn't exist yet
-# when the module is being loaded. Using decorators here would require a
-# module-level `agent = build_agent()` call, but at that point we haven't
-# parsed --openai yet, creating a chicken-and-egg problem.
-#
-# Passing _TOOLS explicitly to Agent(tools=_TOOLS) in build_agent() keeps
-# tools as plain functions and wires them to whichever instance is actually
-# constructed at runtime — clean, explicit, no import-order surprises.
-# ---------------------------------------------------------------------------
-_TOOLS = [execute_script, read_file, write_file, list_dir]
-
-
-def build_agent(use_openai: bool = False) -> Agent:
-    """Build the agent with the appropriate model and all tools."""
+def build_agent(
+    use_openai: bool = False,
+    mcp_url: str = DEFAULT_MCP_URL,
+    socket_path: str | None = None,
+) -> Agent:  # type: ignore[type-arg]
+    mcp_server = (
+        _build_uds_mcp_server(socket_path)
+        if socket_path
+        else _build_tcp_mcp_server(mcp_url)
+    )
     if use_openai:
         return Agent(
             model=build_openai_model(),
-            model_settings={"max_tokens": 127000},
+            model_settings={"max_tokens": 127_000},
             system_prompt=get_system_prompt(),
-            tools=_TOOLS,
+            mcp_servers=[mcp_server],
         )
     return Agent(
         model=build_model(),
         model_settings={
-            "max_tokens": 127000,
+            "max_tokens": 127_000,
             "anthropic_cache_instructions": True,
             "anthropic_cache_tool_definitions": True,
             "anthropic_cache_messages": True,
         },
         system_prompt=get_system_prompt(),
-        tools=_TOOLS,
+        mcp_servers=[mcp_server],
     )
 
 
-from pydantic_ai._agent_graph import CallToolsNode, End, ModelRequestNode, UserPromptNode
+# ---------------------------------------------------------------------------
+# Pretty-printing helpers
+# ---------------------------------------------------------------------------
+
+from pydantic_ai._agent_graph import CallToolsNode, End, ModelRequestNode, UserPromptNode  # noqa: E402
 
 
-def print_request_parts(request: ModelRequest, verbose: bool) -> None:
-    """Print relevant parts from a model request."""
+def _print_request(request: ModelRequest, verbose: bool) -> None:
     for part in request.parts:
         if isinstance(part, UserPromptPart):
-            if verbose:
-                print(f"  📤 [UserPrompt] {part.content}")
-            else:
-                print(f"\n💬 Request: {part.content}")
+            print(
+                f"  \U0001f4e4 [UserPrompt] {part.content}"
+                if verbose
+                else f"\n\U0001f4ac Request: {part.content}"
+            )
 
 
-def print_response_parts(response: ModelResponse, verbose: bool) -> None:
-    """Print relevant parts from a model response (thinking, text, tool calls)."""
+def _print_response(response: ModelResponse, verbose: bool) -> None:
     for part in response.parts:
         if isinstance(part, ThinkingPart):
-            if verbose:
-                print(f"  🧠 [Thinking] {part.content}")
-            else:
-                print(f"\n🧠 Thinking:\n{part.content}")
+            print(
+                f"  \U0001f9e0 [Thinking] {part.content}"
+                if verbose
+                else f"\n\U0001f9e0 Thinking:\n{part.content}"
+            )
         elif isinstance(part, TextPart):
-            if verbose:
-                print(f"  💬 [Text] {part.content}")
-            else:
-                print(f"\n💬 Response:\n{part.content}")
+            print(
+                f"  \U0001f4ac [Text] {part.content}"
+                if verbose
+                else f"\n\U0001f4ac Response:\n{part.content}"
+            )
         elif isinstance(part, ToolCallPart):
-            args_str = str(part.args)[:100] + "..." if len(str(part.args)) > 100 else str(part.args)
-            if verbose:
-                print(f"  🔧 [ToolCall] {part.tool_name}({args_str})")
-            else:
-                print(f"\n🔧 Tool Call: {part.tool_name}({args_str})")
+            snippet = str(part.args)[:120]
+            print(
+                f"  \U0001f527 [ToolCall] {part.tool_name}({snippet})"
+                if verbose
+                else f"\n\U0001f527 Tool: {part.tool_name}({snippet})"
+            )
 
 
-async def main(agent: Agent, verbose: bool = False) -> None:
-    print("🤖 Mini Agent Started. Type 'exit' to quit. Press Ctrl+C to cancel input or an active run.")
-    if verbose:
-        print("   (verbose mode enabled)")
-    
-    message_history = []
-    while True:
-        try:
-            prompt = input("\n👤 You: ")
-        except KeyboardInterrupt:
-            # Ctrl+C pressed - discard current input and start fresh
-            print("  (cancelled)")
-            continue
-        
-        if prompt.strip().lower() in ("exit", "quit"):
-            break
-        if not prompt.strip():
-            continue
+# ---------------------------------------------------------------------------
+# Connectivity check
+# ---------------------------------------------------------------------------
 
-        print("⏳ Agent is thinking... (Ctrl+C to cancel)")
-        try:
+async def _check_reachable(mcp_url: str, socket_path: str | None) -> bool:
+    """Return True if the MCP server is reachable."""
+    if socket_path:
+        from pathlib import Path
+        return Path(socket_path).exists()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=2.0)) as c:
+            await c.get(mcp_url)
+    except httpx.ReadTimeout:
+        return True  # SSE streams forever — timeout == connected
+    except Exception:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Main REPL loop
+# ---------------------------------------------------------------------------
+
+async def main(
+    agent: Agent,  # type: ignore[type-arg]
+    verbose: bool = False,
+    mcp_url: str = DEFAULT_MCP_URL,
+    socket_path: str | None = None,
+) -> None:
+    label = f"socket://{socket_path}" if socket_path else mcp_url
+
+    if not await _check_reachable(mcp_url, socket_path):
+        print(f"\u274c Cannot reach MCP server at {label}")
+        print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
+        return
+
+    print("\U0001f916 Atom Agent (MCP Sandbox)")
+    print(f"   MCP: {label}")
+    print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
+
+    async with agent:
+        message_history: list = []
+        while True:
+            try:
+                prompt = input("\n\U0001f464 You: ")
+            except (KeyboardInterrupt, EOFError):
+                print("  (interrupted)")
+                continue
+
+            if prompt.strip().lower() in ("exit", "quit"):
+                break
+            if not prompt.strip():
+                continue
+
+            print("\u23f3 Thinking... (Ctrl+C to cancel)")
             cancelled = False
             loop = asyncio.get_running_loop()
 
-            async def _run_agent() -> None:
-                async with agent.iter(prompt, message_history=message_history) as agent_run:
-                    async for node in agent_run:
+            async def _run() -> None:
+                async with agent.iter(prompt, message_history=message_history) as run:
+                    async for node in run:
                         if verbose:
                             match node:
-                                case UserPromptNode():
-                                    print("VERBOSE> 📤 [UserPromptNode]")
                                 case ModelRequestNode(request=req):
-                                    print(f"VERBOSE> 📤 [ModelRequestNode]")
-                                    print_request_parts(req, verbose=True)
+                                    _print_request(req, verbose=True)
                                 case CallToolsNode(model_response=resp):
-                                    print(f"VERBOSE> 📥 [CallToolsNode]")
-                                    print_response_parts(resp, verbose=True)
+                                    _print_response(resp, verbose=True)
                                 case End(data=data):
-                                    print(f"VERBOSE> ✅ [End] {str(data)[:200]}")
+                                    print(f"VERBOSE> \u2705 [End] {str(data)[:200]}")
                                 case _:
-                                    print(f"VERBOSE> 🔄 [{type(node).__name__}]")
+                                    print(f"VERBOSE> [{type(node).__name__}]")
                         else:
                             match node:
                                 case CallToolsNode(model_response=resp):
-                                    print_response_parts(resp, verbose=False)
-                                case End():
-                                    pass
+                                    _print_response(resp, verbose=False)
                                 case _:
                                     pass
-
-                result = agent_run.result
+                result = run.result
                 message_history.extend(result.new_messages())
-                print(f"\n Agent: {result.output}")
+                print(f"\n\U0001f916 Agent: {result.output}")
 
-            task = asyncio.ensure_future(_run_agent())
+            task = asyncio.ensure_future(_run())
 
-            def _cancel_handler():
+            def _cancel(_):
                 nonlocal cancelled
                 cancelled = True
                 task.cancel()
 
-            loop.add_signal_handler(signal.SIGINT, _cancel_handler)
+            loop.add_signal_handler(signal.SIGINT, _cancel, None)
             try:
                 await task
             except asyncio.CancelledError:
-                pass  # cancellation handled below via `cancelled` flag
+                pass
             finally:
                 loop.remove_signal_handler(signal.SIGINT)
 
             if cancelled:
-                print("\n⚠️  Agent run cancelled.")
+                print("\n\u26a0\ufe0f  Cancelled.")
 
-        except Exception as e:
-            print(f"\n❌ Error: {e}")
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mini Agent with file tools (sandboxed to /tmp)")
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose mode to show all node details",
+    p = argparse.ArgumentParser(description="Atom Agent — MCP tools in a hardened Docker sandbox")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--openai", action="store_true", help="Use OpenAI model")
+    p.add_argument(
+        "--mcp-url",
+        default=DEFAULT_MCP_URL,
+        metavar="URL",
+        help=f"MCP server SSE URL (default: {DEFAULT_MCP_URL})",
     )
-    parser.add_argument(
-        "--openai",
-        action="store_true",
-        help="Use OpenAI directly via PERSONAL_OPENAI_API_KEY instead of the LLM Gateway",
+    p.add_argument(
+        "--socket",
+        default=None,
+        metavar="PATH",
+        help="Legacy: Unix socket path (overrides --mcp-url when set)",
     )
-    return parser.parse_args()
+    return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    agent = build_agent(use_openai=args.openai)
+    agent = build_agent(
+        use_openai=args.openai,
+        mcp_url=args.mcp_url,
+        socket_path=args.socket,
+    )
     try:
-        asyncio.run(main(agent, verbose=args.verbose))
+        asyncio.run(main(
+            agent,
+            verbose=args.verbose,
+            mcp_url=args.mcp_url,
+            socket_path=args.socket,
+        ))
     except KeyboardInterrupt:
-        print("\n👋 Bye!")
+        print("\n\U0001f44b Bye!")
