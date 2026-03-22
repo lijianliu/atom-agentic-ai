@@ -1,31 +1,27 @@
 """
 agent_mcp.py — Atom Agent backed by MCP tools in a hardened Docker sandbox
 ==========================================================================
-The MCP server runs INSIDE a hardened Docker container (--network=none).
-Communication uses a Unix domain socket bind-mounted from the host —
-the same pattern as gsutil-proxy, just with the roles flipped.
+The MCP server runs INSIDE a hardened Docker container published to
+127.0.0.1:9100 only.  Communication is plain HTTP/SSE over TCP — no relay,
+no Unix socket tricks.
 
 Architecture:
 
-  HOST                                CONTAINER (--network=none)
-  ─────────────────────────           ──────────────────────────────────────
+  HOST                                CONTAINER
+  ──────────────────────              ─────────────────────────────────────
   agent_mcp.py                        mcp_server.py
-    httpx + UDS transport   ←──────── uvicorn bound to /mcp-socket/mcp.sock
-    /tmp/mcp-sandbox/mcp.sock         (bind-mounted from host)
-    MCPServerSSE                       tools: execute_command, read_file ...
-
-  LLM API calls go out normally via host network — the container itself
-  has zero network access.
+    MCPServerSSE  ──── HTTP/SSE ────▶ uvicorn  0.0.0.0:9    http://127.0.0.1:9100/sse         tools: execute_command, read_file ...
 
 Usage:
-  # 1. Start the sandbox MCP server:
-  sandbox/run-hardened-mcp-macos.sh --detach
+  # 1. Start the sandbox:
+  bash sandbox/run-mcp-macos.sh
 
   # 2. Run this agent:
   python -m agent.agent_mcp
   python -m agent.agent_mcp --openai
   python -m agent.agent_mcp --verbose
-  python -m agent.agent_mcp --socket /tmp/mcp-sandbox/mcp.sock
+  python -m agent.agent_mcp --mcp-url http://127.0.0.1:9100/sse
+  python -m agent.agent_mcp --socket /tmp/mcp-sandbox/mcp.sock  # legacy UDS
 """
 from __future__ import annotations
 
@@ -49,10 +45,22 @@ from pydantic_ai.messages import (
 from agent.model import build_model, build_openai_model
 
 
-# Default socket path — must match SOCKET_HOST_PATH in run-hardened-mcp-macos.sh
+# Default MCP endpoint — TCP mode (Option 2)
+DEFAULT_MCP_URL = "http://127.0.0.1:9100/sse"
+# Legacy Unix socket path (Option 3, kept for backward compat)
 DEFAULT_SOCKET = "/tmp/mcp-sandbox/mcp.sock"
-# SSE endpoint path as configured by FastMCP defaults
+# SSE endpoint path
 SSE_PATH = "/sse"
+
+
+def _build_tcp_mcp_server(url: str) -> MCPServerSSE:
+    """Build an MCPServerSSE that connects via plain TCP (the normal way)."""
+    return MCPServerSSE(
+        url=url,
+        http_client=httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=300.0),
+        ),
+    )
 
 
 def _build_uds_mcp_server(socket_path: str) -> MCPServerSSE:
@@ -89,10 +97,14 @@ def get_system_prompt() -> str:
 
 def build_agent(
     use_openai: bool = False,
-    socket_path: str = DEFAULT_SOCKET,
+    mcp_url: str = DEFAULT_MCP_URL,
+    socket_path: str | None = None,
 ) -> Agent:  # type: ignore[type-arg]
-    """Build the agent, wiring its MCP tools through the UDS sandbox."""
-    mcp_server = _build_uds_mcp_server(socket_path)
+    """Build the agent. TCP (mcp_url) is default; socket_path enables legacy UDS mode."""
+    if socket_path:
+        mcp_server = _build_uds_mcp_server(socket_path)
+    else:
+        mcp_server = _build_tcp_mcp_server(mcp_url)
 
     if use_openai:
         return Agent(
@@ -141,16 +153,34 @@ def _print_response(response: ModelResponse, verbose: bool) -> None:
 # Main loop
 # ---------------------------------------------------------------------------
 
-async def main(agent: Agent, verbose: bool = False, socket_path: str = DEFAULT_SOCKET) -> None:  # type: ignore[type-arg]
-    sock = Path(socket_path)
-    if not sock.exists():
-        print(f"\u274c Socket not found: {socket_path}")
-        print("   Start the sandbox first:")
-        print("     sandbox/run-hardened-mcp-macos.sh --detach")
-        return
+async def main(
+    agent: Agent,  # type: ignore[type-arg]
+    verbose: bool = False,
+    mcp_url: str = DEFAULT_MCP_URL,
+    socket_path: str | None = None,
+) -> None:
+    # connectivity check
+    if socket_path:
+        from pathlib import Path
+        if not Path(socket_path).exists():
+            print(f"\u274c Socket not found: {socket_path}")
+            print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
+            return
+        label = f"socket://{socket_path}"
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=2.0)) as c:
+                await c.get(mcp_url)
+        except httpx.ReadTimeout:
+            pass  # connected fine — SSE just streams forever, never "completes"
+        except Exception:
+            print(f"\u274c Cannot reach MCP server at {mcp_url}")
+            print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
+            return
+        label = mcp_url
 
-    print("\U0001f916 Atom Agent (MCP Sandbox — UDS mode)")
-    print(f"   Socket: {socket_path}")
+    print("\U0001f916 Atom Agent (MCP Sandbox)")
+    print(f"   MCP: {label}")
     print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
 
     async with agent:
@@ -219,23 +249,38 @@ async def main(agent: Agent, verbose: bool = False, socket_path: str = DEFAULT_S
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Atom Agent — MCP tools over Unix domain socket sandbox"
+        description="Atom Agent — MCP tools in a hardened Docker sandbox"
     )
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--openai", action="store_true", help="Use OpenAI model")
     p.add_argument(
+        "--mcp-url",
+        default=DEFAULT_MCP_URL,
+        metavar="URL",
+        help=f"MCP server SSE URL (default: {DEFAULT_MCP_URL})",
+    )
+    p.add_argument(
         "--socket",
-        default=DEFAULT_SOCKET,
+        default=None,
         metavar="PATH",
-        help=f"Unix socket path of the sandbox MCP server (default: {DEFAULT_SOCKET})",
+        help="Legacy: Unix socket path (overrides --mcp-url when set)",
     )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    agent = build_agent(use_openai=args.openai, socket_path=args.socket)
+    agent = build_agent(
+        use_openai=args.openai,
+        mcp_url=args.mcp_url,
+        socket_path=args.socket,
+    )
     try:
-        asyncio.run(main(agent, verbose=args.verbose, socket_path=args.socket))
+        asyncio.run(main(
+            agent,
+            verbose=args.verbose,
+            mcp_url=args.mcp_url,
+            socket_path=args.socket,
+        ))
     except KeyboardInterrupt:
         print("\n\U0001f44b Bye!")
