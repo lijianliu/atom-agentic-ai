@@ -444,16 +444,19 @@ MCP Client (Claude Desktop / curl / test-mcp.py)
 
 | File | Purpose |
 |---|---|
-| `sandbox/mcp_server.py` | MCP server — supports both TCP (`--port`) and UDS (`--uds`) |
-| `sandbox/Dockerfile.mcp` | Container image (extends `hardened-sandbox`) |
-| `sandbox/run-mcp-macos.sh` | Launch script — `docker run -p 127.0.0.1:9100:9100` |
-| `sandbox/test-mcp.py` | Smoke test — stdlib only, ~0.1s, auto-detects TCP or UDS |
+| `sandbox/mcp_server.py` | MCP server — TCP only (`--port`, default 9100) |
+| `sandbox/Dockerfile` | Single container image (base + MCP deps bundled) |
+| `sandbox/sandbox.sh` | Unified launch script — `./sandbox.sh --mcp [--port PORT]` |
+| `sandbox/test-mcp.py` | Smoke test — stdlib only, ~0.1s, TCP only |
 
 ### Quick start
 
 ```bash
-# build + start
-bash sandbox/run-mcp-macos.sh
+# build + start (default port 9100)
+bash sandbox/sandbox.sh --mcp
+
+# or detached
+bash sandbox/sandbox.sh --mcp --detach
 
 # verify everything works
 python3 sandbox/test-mcp.py

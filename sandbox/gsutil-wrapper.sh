@@ -1,23 +1,23 @@
 #!/bin/bash
-# gsutil wrapper — thin client that sends commands to the host proxy via Unix socket.
-# This script lives INSIDE the container. The real gsutil runs OUTSIDE.
+# gsutil-wrapper.sh
+# Thin client that forwards gsutil commands to the host proxy via Unix socket.
+# Lives INSIDE the container; the real gsutil + credentials live OUTSIDE.
+#
+# Socket path: /tmp/gsutil-proxy.sock (mounted in by sandbox.sh)
 set -euo pipefail
 
-SOCKET_PATH="/var/run/gsutil-proxy.sock"
+SOCKET_PATH="/tmp/gsutil-proxy.sock"
 
 if [ ! -S "${SOCKET_PATH}" ]; then
     echo "ERROR: gsutil proxy socket not found at ${SOCKET_PATH}" >&2
-    echo "The gsutil proxy service may not be running on the host." >&2
+    echo "Start the proxy on the host: python3 gsutil-proxy.py" >&2
     exit 1
 fi
 
-# Build JSON request and send over Unix socket, print response directly
 exec python3 -c "
 import json, socket, sys
 
-args = sys.argv[1:]
-request = json.dumps({'args': args})
-
+request = json.dumps({'args': sys.argv[1:]})
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     sock.connect('${SOCKET_PATH}')
@@ -29,8 +29,7 @@ try:
         if not chunk:
             break
         chunks.append(chunk)
-    data = b''.join(chunks)
-    resp = json.loads(data.decode('utf-8'))
+    resp = json.loads(b''.join(chunks).decode('utf-8'))
     if resp.get('stdout'):
         print(resp['stdout'], end='', file=sys.stdout)
     if resp.get('stderr'):

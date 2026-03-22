@@ -2,15 +2,10 @@
 """
 MCP Server for Hardened Docker Sandbox
 ======================================
-Runs INSIDE the Docker container with --network=none.
-Communicates with the host via a Unix domain socket mounted
-into the container from the host (same pattern as gsutil-proxy).
+Runs INSIDE the Docker container. Binds to a TCP port (default 9100)
+published to localhost-only via sandbox.sh (-p 127.0.0.1:PORT:PORT).
 
-  HOST                                CONTAINER (--network=none)
-  ──────────────────────────          ────────────────────────────────────
-  agent_mcp.py                        mcp_server.py
-    httpx + UDS transport   ←──────── uvicorn bound to /mcp-socket/mcp.sock
-    /tmp/mcp-sandbox/mcp.sock         (bind-mounted from host)
+Clients connect to: http://127.0.0.1:<PORT>/sse
 
 Tools:
   execute_command  — run any shell command, return stdout/stderr/exit-code
@@ -195,54 +190,12 @@ def list_dir(path: str = "/workspace") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Server runners
+# Server runner
 # ---------------------------------------------------------------------------
-
-async def _chmod_when_ready(socket_path: str, mode: int = 0o666) -> None:
-    """Poll until the socket file appears, then chmod it world-accessible.
-
-    Uvicorn creates the socket synchronously right before the ASGI lifespan
-    starts, so this typically fires after only one or two polls.
-    """
-    path = Path(socket_path)
-    for _ in range(200):          # up to 10 s in 50 ms steps
-        if path.exists():
-            os.chmod(socket_path, mode)
-            print(f"\u2705 Socket ready: {socket_path} (mode {oct(mode)})", flush=True)
-            return
-        await asyncio.sleep(0.05)
-    print(f"\u26a0\ufe0f  Timed out waiting for socket: {socket_path}", flush=True)
-
-
-async def _run_uds(socket_path: str, transport: str = "sse") -> None:
-    """Run the MCP server bound to a Unix domain socket."""
-    path = Path(socket_path)
-    if path.exists():
-        path.unlink()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    app = mcp.http_app(transport=transport)
-    config = uvicorn.Config(
-        app, uds=socket_path, lifespan="on",
-        log_level="info", timeout_graceful_shutdown=0,
-    )
-    server = uvicorn.Server(config)
-
-    print(f"\U0001f512 MCP Sandbox Server — unix:{socket_path} [{transport}]")
-    print(f"   Safe root:   {SAFE_ROOT}")
-    print(f"   Cmd timeout: {COMMAND_TIMEOUT}s")
-    print(f"   Tools: execute_command | read_file | write_file | append_file | delete_file | list_dir")
-
-    chmod_task = asyncio.create_task(_chmod_when_ready(socket_path))
-    try:
-        await server.serve()
-    finally:
-        chmod_task.cancel()
-
 
 async def _run_tcp(host: str = "0.0.0.0", port: int = 9100,
                    transport: str = "sse") -> None:
-    """Run the MCP server on a TCP port (Option 2 — internal Docker network)."""
+    """Run the MCP server on a TCP port, bound to localhost-only by the host."""
     app = mcp.http_app(transport=transport)
     config = uvicorn.Config(
         app, host=host, port=port, lifespan="on",
@@ -266,12 +219,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="MCP Sandbox Server")
     parser.add_argument(
-        "--uds", default=os.environ.get("MCP_UDS_PATH", ""), metavar="PATH",
-        help="Unix domain socket path.  Env var: MCP_UDS_PATH",
-    )
-    parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("MCP_PORT", "0")),
-        help="TCP port (Option 2 — internal Docker network).  Env var: MCP_PORT",
+        "--port", type=int, default=int(os.environ.get("MCP_PORT", "9100")),
+        help="TCP port to bind (default: 9100).  Env var: MCP_PORT",
     )
     parser.add_argument(
         "--host", default=os.environ.get("MCP_HOST", "0.0.0.0"),
@@ -282,13 +231,4 @@ if __name__ == "__main__":
         help="HTTP transport flavour (default: sse)",
     )
     args = parser.parse_args()
-
-    if args.port:
-        asyncio.run(_run_tcp(host=args.host, port=args.port,
-                             transport=args.transport))
-    elif args.uds:
-        asyncio.run(_run_uds(socket_path=args.uds, transport=args.transport))
-    else:
-        parser.error("Specify --port PORT (TCP) or --uds PATH (Unix socket).\n"
-                     "  TCP example:  python3 mcp_server.py --port 9100\n"
-                     "  UDS example:  python3 mcp_server.py --uds /tmp/mcp.sock")
+    asyncio.run(_run_tcp(host=args.host, port=args.port, transport=args.transport))

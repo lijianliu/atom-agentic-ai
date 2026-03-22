@@ -4,7 +4,7 @@ test-mcp.py — MCP sandbox smoke-test (zero external deps, stdlib only)
 
 Usage:
     python3 sandbox/test-mcp.py
-    python3 sandbox/test-mcp.py --socket /tmp/mcp-sandbox/mcp.sock
+    python3 sandbox/test-mcp.py --port 9100
 """
 from __future__ import annotations
 
@@ -29,33 +29,24 @@ def _hdr(n: int, total: int, title: str):
 
 # ─ MCP client (SSE transport, Unix socket) ─────────────────────────────
 
-def _make_socket(tcp_addr: tuple | None, uds_path: str | None) -> socket.socket:
-    """Create and connect a raw socket — TCP or Unix, caller's choice."""
-    if tcp_addr:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect(tcp_addr)
-    else:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(uds_path)  # type: ignore[arg-type]
+def _make_socket(tcp_addr: tuple) -> socket.socket:
+    """Create and connect a raw TCP socket."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect(tcp_addr)
     return s
 
 
 class MCPClient:
     """
-    Thin MCP-over-SSE client.
-    Supports both TCP (Option 2) and Unix socket (Option 3 legacy).
+    Thin MCP-over-SSE client (TCP only).
 
     One persistent SSE connection receives all push events.
     Each call() sends the POST through a fresh short-lived connection.
     """
 
-    def __init__(self, tcp_addr: tuple | None = None,
-                 uds_path: str | None = None,
+    def __init__(self, tcp_addr: tuple,
                  sse_timeout: int = 8) -> None:
-        if not tcp_addr and not uds_path:
-            raise ValueError("Provide tcp_addr or uds_path")
         self._tcp  = tcp_addr
-        self._uds  = uds_path
         self._msg_path: str = ""
         self._sse: socket.socket | None = None
         self._buf = b""
@@ -66,7 +57,7 @@ class MCPClient:
     # ─ connect ────────────────────────────────────────────────────────────
     def connect(self) -> str:
         """Open SSE stream, return messages endpoint path."""
-        s = _make_socket(self._tcp, self._uds)
+        s = _make_socket(self._tcp)
         s.settimeout(self._sse_timeout)
         s.sendall(
             b"GET /sse HTTP/1.1\r\nHost: sandbox\r\n"
@@ -104,7 +95,7 @@ class MCPClient:
             f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
             f"Connection: close\r\n\r\n"
         ).encode() + body
-        s = _make_socket(self._tcp, self._uds)
+        s = _make_socket(self._tcp)
         s.sendall(req)
         # The server returns 202 Accepted almost immediately.
         # Use a short timeout so we don't block and miss the SSE event.
@@ -169,14 +160,14 @@ class MCPClient:
 TOTAL = 6
 
 
-def run(tcp_addr: tuple | None = None, uds_path: str | None = None) -> None:
+def run(tcp_addr: tuple) -> None:
     t0 = time.monotonic()
-    addr_str = f"{tcp_addr[0]}:{tcp_addr[1]}" if tcp_addr else uds_path
+    addr_str = f"{tcp_addr[0]}:{tcp_addr[1]}"
     print(f"{BOLD}\n🐶  MCP Sandbox Test Suite{RST}  {DIM}{addr_str}{RST}\n")
 
     # 1 ─ SSE handshake
     _hdr(1, TOTAL, "SSE handshake")
-    client = MCPClient(tcp_addr=tcp_addr, uds_path=uds_path)
+    client = MCPClient(tcp_addr=tcp_addr)
     try:
         ep = client.connect()
     except Exception as exc:
@@ -277,21 +268,7 @@ def run(tcp_addr: tuple | None = None, uds_path: str | None = None) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port",   type=int, default=0,
-                    help="TCP port, e.g. 9100 (Option 2 — internal network)")
-    ap.add_argument("--socket", default="",
-                    help="Unix socket path (legacy Option 3 relay)")
+    ap.add_argument("--port", type=int, default=9100,
+                    help="TCP port (default: 9100)")
     args = ap.parse_args()
-
-    if args.port:
-        run(tcp_addr=("127.0.0.1", args.port))
-    elif args.socket:
-        run(uds_path=args.socket)
-    else:
-        # smart default: try TCP 9100 first, fall back to Unix socket
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1); s.connect(("127.0.0.1", 9100)); s.close()
-            run(tcp_addr=("127.0.0.1", 9100))
-        except OSError:
-            run(uds_path="/tmp/mcp-sandbox/mcp.sock")
+    run(tcp_addr=("127.0.0.1", args.port))

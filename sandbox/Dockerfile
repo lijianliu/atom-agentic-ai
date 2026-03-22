@@ -1,14 +1,21 @@
 # Hardened Sandbox Container
 # ==========================
 # Maximally locked-down container for running untrusted code.
-# gsutil is proxied through a Unix socket to the host.
+# Supports interactive shells, one-off commands, and the MCP server.
+#
+# Security layers (applied at run time via sandbox.sh):
+#   --cap-drop=ALL  |  --no-new-privileges  |  --read-only rootfs
+#   --network=none  |  custom seccomp        |  PID/mem/cpu limits
+#   --tmpfs /tmp,/run,/workspace             |  UID 1000 (non-root)
 
 FROM python:3.12-slim-bookworm
 
 LABEL maintainer="atom-security"
-LABEL description="Hardened sandbox container - no jailbreak possible"
+LABEL description="Hardened sandbox — no jailbreak possible"
 
-# Install common tools
+# ---------------------------------------------------------------------------
+# System tools
+# ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
@@ -23,36 +30,53 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# ============================================================
-# SECURITY HARDENING
-# ============================================================
+# ---------------------------------------------------------------------------
+# Security hardening
+# ---------------------------------------------------------------------------
 
-# 1. Create non-root user
+# 1. Non-root user
 RUN groupadd -g 1000 sandbox && \
     useradd -u 1000 -g sandbox -m -s /bin/bash sandbox
 
-# 2. Create workspace
+# 2. Workspace directory
 RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
 
-# 3. Remove ALL setuid/setgid binaries
+# 3. Strip all setuid/setgid bits
 RUN find / -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
 
-# 4. Remove package managers
+# 4. MCP server dependencies (must happen before package managers are removed)
+RUN pip install --no-cache-dir \
+    "fastmcp>=2.0" \
+    "uvicorn[standard]>=0.27" \
+    "starlette>=0.36" \
+    "httpx>=0.24"
+
+# 5. Remove package managers
 RUN rm -f /usr/bin/apt-get /usr/bin/apt /usr/bin/dpkg
 
-# 5. Set restrictive umask
+# 6. Restrictive umask
 RUN echo 'umask 0077' >> /home/sandbox/.bashrc
 
-# ============================================================
-# GSUTIL PROXY WRAPPER
-# ============================================================
-# Install the thin wrapper that talks to the host proxy via Unix socket.
-# The real gsutil + credentials live OUTSIDE the container.
+# ---------------------------------------------------------------------------
+# MCP server
+# ---------------------------------------------------------------------------
+RUN mkdir -p /opt/mcp && chown sandbox:sandbox /opt/mcp
+COPY mcp_server.py /opt/mcp/mcp_server.py
+
+ENV MCP_SAFE_ROOT=/workspace
+ENV MCP_CMD_TIMEOUT=120
+
+# ---------------------------------------------------------------------------
+# gsutil proxy wrapper
+# Thin client that forwards gsutil commands to the host via Unix socket.
+# Socket path auto-detected at runtime (see wrapper script).
+# ---------------------------------------------------------------------------
 COPY gsutil-wrapper.sh /usr/local/bin/gsutil
 RUN chmod +x /usr/local/bin/gsutil
 
-# Switch to non-root user
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
 USER sandbox
 WORKDIR /workspace
-
 CMD ["/bin/bash"]

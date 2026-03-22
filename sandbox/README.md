@@ -25,35 +25,41 @@ from escaping, damaging, or even seeing the host VM.
 ## Quick Start
 
 ```bash
-chmod +x *.sh
+chmod +x sandbox.sh
 
-# Run with NO network (maximum isolation)
-./run-hardened.sh
+# Interactive shell, NO network (maximum isolation)
+./sandbox.sh
 
-# Run WITH network — interactive shell
-./run-hardened-with-network-macos.sh
+# Run a one-off command, no network
+./sandbox.sh -- python3 -c "print('hello from jail')"
 
-# Run WITH network — MCP server (foreground, SSE on port 8811)
-./run-hardened-with-network-macos.sh --mcp
+# Interactive shell WITH network
+./sandbox.sh --network
 
-# MCP server in the background
-./run-hardened-with-network-macos.sh --mcp --detach
+# Run a command WITH network
+./sandbox.sh --network -- pip install requests
+
+# MCP server on TCP port 9100 (default, localhost-only)
+./sandbox.sh --mcp
 
 # MCP server on a custom port
-./run-hardened-with-network-macos.sh --mcp --port 9999
+./sandbox.sh --mcp --port 8811
 
-# Stop the background MCP server
-./run-hardened-with-network-macos.sh --mcp --stop
+# MCP server in the background
+./sandbox.sh --mcp --detach
 
-# Drop into an interactive shell using the MCP image
-./run-hardened-with-network-macos.sh --mcp --shell
+# Stop the background MCP container
+./sandbox.sh --mcp --stop
+
+# Drop into a debug shell
+./sandbox.sh --mcp --shell
 
 # MCP over streamable-HTTP instead of SSE
-./run-hardened-with-network-macos.sh --mcp --transport streamable-http
-
-# Run a one-off command
-./run-hardened-with-network-macos.sh -- python3 -c "print('hello from jail')"
+./sandbox.sh --mcp --transport streamable-http
 ```
+
+Works on **Linux and macOS** (Apple Silicon + Intel). Automatically detects
+the platform, picks the right Docker platform, and handles Colima on macOS.
 
 ## MCP Server Tools
 
@@ -69,7 +75,9 @@ chmod +x *.sh
 All file tools accept absolute paths **or** paths relative to `/workspace`.
 Attempts to escape `/workspace` are rejected with an error.
 
-Connect your MCP client to: `http://127.0.0.1:8811/sse` (SSE transport)
+Connect your MCP client to: `http://127.0.0.1:9100/sse` (default port)
+
+Test it with: `python3 sandbox/test-mcp.py` (or `--port PORT` for a custom port)
 
 ## What can the container NOT do?
 
@@ -88,7 +96,7 @@ Connect your MCP client to: `http://127.0.0.1:8811/sse` (SSE transport)
 
 ## Customization
 
-- **Need network?** Use `run-hardened-with-network.sh`
-- **Need to mount files in?** Add `-v /host/path:/workspace/data:ro` (read-only!)
-- **Need more memory?** Edit `--memory=2g` in the script
-- **Need specific tools?** Edit the Dockerfile and rebuild
+- **Need network?** Use `./sandbox.sh --network`
+- **Need to mount files in?** Add `-v /host/path:/workspace/data:ro` (read-only!) to `sandbox.sh`
+- **Need more memory?** Edit `--memory=2g` in `sandbox.sh`
+- **Need specific tools?** Edit `Dockerfile` and rebuild (image rebuilds automatically on next run)
