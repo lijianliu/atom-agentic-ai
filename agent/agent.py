@@ -161,6 +161,8 @@ async def main(
                     async for node in run:
                         if Agent.is_model_request_node(node):
                             # --- Stream the model's response token-by-token ---
+                            tool_args_printed = 0       # chars of tool args emitted
+                            TOOL_ARGS_CAP = 200         # max chars before "…"
                             async with node.stream(run.ctx) as stream:
                                 async for event in stream:
                                     if isinstance(event, PartStartEvent):
@@ -175,8 +177,11 @@ async def main(
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, ToolCallPart):
-                                            args_str = str(event.part.args) if event.part.args else ""
-                                            print(f"\n\U0001f527 Tool: {event.part.tool_name}({args_str}", end="", flush=True)
+                                            tool_args_printed = 0  # reset for each new tool call
+                                            if verbose:
+                                                args_str = str(event.part.args) if event.part.args else ""
+                                                print(f"\n\U0001f527 Tool: {event.part.tool_name}({args_str}", end="", flush=True)
+                                                tool_args_printed += len(args_str)
                                     elif isinstance(event, PartDeltaEvent):
                                         if isinstance(event.delta, TextPartDelta):
                                             print(event.delta.content_delta, end="", flush=True)
@@ -184,17 +189,41 @@ async def main(
                                             if verbose:
                                                 print(event.delta.content_delta, end="", flush=True)
                                         elif isinstance(event.delta, ToolCallPartDelta):
-                                            print(event.delta.args_delta, end="", flush=True)
+                                            if verbose and tool_args_printed < TOOL_ARGS_CAP:
+                                                chunk = event.delta.args_delta
+                                                remaining = TOOL_ARGS_CAP - tool_args_printed
+                                                if len(chunk) > remaining:
+                                                    print(chunk[:remaining] + "…)", flush=True)
+                                                else:
+                                                    print(chunk, end="", flush=True)
+                                                tool_args_printed += len(chunk)
                                 print()  # newline after each streamed model turn
+                                # Show per-turn token usage with cache & call info
+                                u = stream.usage()
+                                in_t = u.input_tokens or 0
+                                out_t = u.output_tokens or 0
+                                cache_write = getattr(u, 'cache_write_tokens', 0) or 0
+                                cache_read = getattr(u, 'cache_read_tokens', 0) or 0
+                                new_t = in_t - cache_write - cache_read
+                                reqs = getattr(u, 'requests', 0) or 0
+                                tools = getattr(u, 'tool_calls', 0) or 0
+                                line = (
+                                    f"{in_t:,} in "
+                                    f"({new_t:,} new \u00b7 {cache_write:,} cache write \u00b7 {cache_read:,} cache read)"
+                                    f" / {out_t:,} out"
+                                    f" | {reqs} reqs / {tools} tools"
+                                )
+                                print(f"  \U0001f4ca [{line}]")
 
                         elif Agent.is_call_tools_node(node):
-                            # Tools are being executed — results will feed
-                            # back into the next ModelRequestNode automatically.
-                            if verbose:
-                                for part in node.model_response.parts:
-                                    if isinstance(part, ToolCallPart):
-                                        snippet = str(part.args)[:120]
-                                        print(f"  \U0001f527 [Executing] {part.tool_name}({snippet})")
+                            # Tools have been called — print a clean summary.
+                            for part in node.model_response.parts:
+                                if isinstance(part, ToolCallPart):
+                                    args_str = str(part.args)[:200] if part.args else ""
+                                    if verbose:
+                                        print(f"  \u2699\ufe0f  [Executing] {part.tool_name}({args_str})")
+                                    else:
+                                        print(f"\U0001f527 Tool: {part.tool_name}({args_str})")
 
                         elif Agent.is_end_node(node):
                             if verbose:
@@ -203,6 +232,23 @@ async def main(
                     result = run.result
                     message_history.extend(result.new_messages())
                     print(f"\n\U0001f916 Agent: {result.output}")
+
+                    usage = result.usage()
+                    in_t = usage.input_tokens or 0
+                    out_t = usage.output_tokens or 0
+                    cache_write = getattr(usage, 'cache_write_tokens', 0) or 0
+                    cache_read = getattr(usage, 'cache_read_tokens', 0) or 0
+                    new_t = in_t - cache_write - cache_read
+                    reqs = getattr(usage, 'requests', 0) or 0
+                    tools = getattr(usage, 'tool_calls', 0) or 0
+                    total_line = (
+                        f"{in_t:,} in "
+                        f"({new_t:,} new \u00b7 {cache_write:,} cache write \u00b7 {cache_read:,} cache read)"
+                        f" / {out_t:,} out"
+                        f" / {in_t + out_t:,} total"
+                        f" | {reqs} reqs / {tools} tools"
+                    )
+                    print(f"\n\U0001f4ca Total: {total_line}")
 
             task = asyncio.ensure_future(_run())
 
