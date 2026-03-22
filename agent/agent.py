@@ -207,9 +207,12 @@ async def main(
                                 new_t = in_t - cache_write - cache_read
                                 reqs = getattr(u, 'requests', 0) or 0
                                 tools = getattr(u, 'tool_calls', 0) or 0
+                                cache_hit_pct = (cache_read / in_t * 100) if in_t > 0 else 0
+                                uncached = new_t + cache_write
                                 line = (
                                     f"{in_t:,} in "
                                     f"({new_t:,} new \u00b7 {cache_write:,} cache write \u00b7 {cache_read:,} cache read)"
+                                    f" [{cache_hit_pct:.0f}% hit \u00b7 {uncached:,} uncached]"
                                     f" / {out_t:,} out"
                                     f" | {reqs} reqs / {tools} tools"
                                 )
@@ -241,9 +244,12 @@ async def main(
                     new_t = in_t - cache_write - cache_read
                     reqs = getattr(usage, 'requests', 0) or 0
                     tools = getattr(usage, 'tool_calls', 0) or 0
+                    cache_hit_pct = (cache_read / in_t * 100) if in_t > 0 else 0
+                    uncached = new_t + cache_write
                     total_line = (
                         f"{in_t:,} in "
                         f"({new_t:,} new \u00b7 {cache_write:,} cache write \u00b7 {cache_read:,} cache read)"
+                        f" [{cache_hit_pct:.0f}% hit \u00b7 {uncached:,} uncached]"
                         f" / {out_t:,} out"
                         f" / {in_t + out_t:,} total"
                         f" | {reqs} reqs / {tools} tools"
