@@ -25,23 +25,51 @@ from escaping, damaging, or even seeing the host VM.
 ## Quick Start
 
 ```bash
-# Copy files to the VM
-scp -r hardened-container/ <YOUR-VM-IP>:~/hardened-container/
-
-# SSH in
-ssh <YOUR-VM-IP>
-cd ~/hardened-container
 chmod +x *.sh
 
 # Run with NO network (maximum isolation)
 ./run-hardened.sh
 
-# Run WITH network (for pip install, etc.)
-./run-hardened-with-network.sh
+# Run WITH network — interactive shell
+./run-hardened-with-network-macos.sh
 
-# Run a specific command
-./run-hardened.sh python3 -c "print('hello from jail')"
+# Run WITH network — MCP server (foreground, SSE on port 8811)
+./run-hardened-with-network-macos.sh --mcp
+
+# MCP server in the background
+./run-hardened-with-network-macos.sh --mcp --detach
+
+# MCP server on a custom port
+./run-hardened-with-network-macos.sh --mcp --port 9999
+
+# Stop the background MCP server
+./run-hardened-with-network-macos.sh --mcp --stop
+
+# Drop into an interactive shell using the MCP image
+./run-hardened-with-network-macos.sh --mcp --shell
+
+# MCP over streamable-HTTP instead of SSE
+./run-hardened-with-network-macos.sh --mcp --transport streamable-http
+
+# Run a one-off command
+./run-hardened-with-network-macos.sh -- python3 -c "print('hello from jail')"
 ```
+
+## MCP Server Tools
+
+| Tool | Description |
+|---|---|
+| `execute_command` | Run any shell command; returns exit code + stdout/stderr |
+| `read_file` | Read file contents (jailed to `/workspace`) |
+| `write_file` | Write/overwrite a file (jailed to `/workspace`) |
+| `append_file` | Append text to a file (jailed to `/workspace`) |
+| `delete_file` | Delete a file (jailed to `/workspace`) |
+| `list_dir` | List directory contents (jailed to `/workspace`) |
+
+All file tools accept absolute paths **or** paths relative to `/workspace`.
+Attempts to escape `/workspace` are rejected with an error.
+
+Connect your MCP client to: `http://127.0.0.1:8811/sse` (SSE transport)
 
 ## What can the container NOT do?
 

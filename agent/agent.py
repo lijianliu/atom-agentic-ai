@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -182,7 +183,7 @@ def print_response_parts(response: ModelResponse, verbose: bool) -> None:
 
 
 async def main(agent: Agent, verbose: bool = False) -> None:
-    print("🤖 Mini Agent Started. Type 'exit' to quit. Press Ctrl+C to cancel input.")
+    print("🤖 Mini Agent Started. Type 'exit' to quit. Press Ctrl+C to cancel input or an active run.")
     if verbose:
         print("   (verbose mode enabled)")
     
@@ -200,37 +201,61 @@ async def main(agent: Agent, verbose: bool = False) -> None:
         if not prompt.strip():
             continue
 
-        print("⏳ Agent is thinking...")
-        async with agent.iter(prompt, message_history=message_history) as agent_run:
-            async for node in agent_run:
-                if verbose:
-                    # Verbose mode: show all node types with full details
-                    match node:
-                        case UserPromptNode():
-                            print("VERBOSE> 📤 [UserPromptNode]")
-                        case ModelRequestNode(request=req):
-                            print(f"VERBOSE> 📤 [ModelRequestNode]")
-                            print_request_parts(req, verbose=True)
-                        case CallToolsNode(model_response=resp):
-                            print(f"VERBOSE> 📥 [CallToolsNode]")
-                            print_response_parts(resp, verbose=True)
-                        case End(data=data):
-                            print(f"VERBOSE> ✅ [End] {str(data)[:200]}")
-                        case _:
-                            print(f"VERBOSE> 🔄 [{type(node).__name__}]")
-                else:
-                    # Non-verbose: just show thinking, response text, and tool calls
-                    match node:
-                        case CallToolsNode(model_response=resp):
-                            print_response_parts(resp, verbose=False)
-                        case End():
-                            pass  # Final output printed below
-                        case _:
-                            pass  # Skip other nodes in non-verbose mode
+        print("⏳ Agent is thinking... (Ctrl+C to cancel)")
+        try:
+            cancelled = False
+            loop = asyncio.get_running_loop()
 
-        result = agent_run.result
-        message_history.extend(result.new_messages())
-        print(f"\n Agent: {result.output}")
+            async def _run_agent() -> None:
+                async with agent.iter(prompt, message_history=message_history) as agent_run:
+                    async for node in agent_run:
+                        if verbose:
+                            match node:
+                                case UserPromptNode():
+                                    print("VERBOSE> 📤 [UserPromptNode]")
+                                case ModelRequestNode(request=req):
+                                    print(f"VERBOSE> 📤 [ModelRequestNode]")
+                                    print_request_parts(req, verbose=True)
+                                case CallToolsNode(model_response=resp):
+                                    print(f"VERBOSE> 📥 [CallToolsNode]")
+                                    print_response_parts(resp, verbose=True)
+                                case End(data=data):
+                                    print(f"VERBOSE> ✅ [End] {str(data)[:200]}")
+                                case _:
+                                    print(f"VERBOSE> 🔄 [{type(node).__name__}]")
+                        else:
+                            match node:
+                                case CallToolsNode(model_response=resp):
+                                    print_response_parts(resp, verbose=False)
+                                case End():
+                                    pass
+                                case _:
+                                    pass
+
+                result = agent_run.result
+                message_history.extend(result.new_messages())
+                print(f"\n Agent: {result.output}")
+
+            task = asyncio.ensure_future(_run_agent())
+
+            def _cancel_handler():
+                nonlocal cancelled
+                cancelled = True
+                task.cancel()
+
+            loop.add_signal_handler(signal.SIGINT, _cancel_handler)
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass  # cancellation handled below via `cancelled` flag
+            finally:
+                loop.remove_signal_handler(signal.SIGINT)
+
+            if cancelled:
+                print("\n⚠️  Agent run cancelled.")
+
+        except Exception as e:
+            print(f"\n❌ Error: {e}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -251,4 +276,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     agent = build_agent(use_openai=args.openai)
-    asyncio.run(main(agent, verbose=args.verbose))
+    try:
+        asyncio.run(main(agent, verbose=args.verbose))
+    except KeyboardInterrupt:
+        print("\n👋 Bye!")

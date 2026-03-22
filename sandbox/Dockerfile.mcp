@@ -1,0 +1,36 @@
+# Hardened Sandbox Container + MCP Server  —  Option 2 (internal TCP network)
+# ===========================================================================
+# Architecture:
+#   docker network create --internal mcp-jail   (no internet, host can reach in)
+#   container binds uvicorn to 0.0.0.0:9100
+#   host publishes -p 127.0.0.1:9100:9100
+#   MCP client connects to http://localhost:9100/sse
+#
+# Security layers (applied at docker run time):
+#   --network mcp-jail   | --cap-drop=ALL | --no-new-privileges
+#   --read-only rootfs   | --security-opt seccomp=... | PID/mem/cpu limits
+#   --tmpfs /tmp,/run,/workspace (uid=1000 so sandbox user can write)
+
+FROM hardened-sandbox:latest
+
+LABEL description="Hardened sandbox + MCP server (TCP, internal Docker network)"
+
+USER root
+RUN mkdir -p /opt/mcp && chown sandbox:sandbox /opt/mcp
+COPY mcp_server.py /opt/mcp/mcp_server.py
+USER sandbox
+WORKDIR /workspace
+
+ENV MCP_SAFE_ROOT=/workspace
+ENV MCP_CMD_TIMEOUT=120
+ENV MCP_PORT=9100
+
+EXPOSE 9100
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+    CMD python3 -c \
+        "import urllib.request,sys; \
+         urllib.request.urlopen('http://localhost:9100/sse',timeout=4); \
+         sys.exit(0)" 2>/dev/null || exit 1
+
+CMD ["python3", "/opt/mcp/mcp_server.py", "--port", "9100"]

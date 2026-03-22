@@ -1,0 +1,72 @@
+# Hardened Sandbox Container (macOS / Apple Silicon + Intel compatible)
+# ====================================================================
+# Maximally locked-down container for running untrusted code.
+# gsutil is proxied through a Unix socket to the host.
+#
+# Differences from Linux version:
+#   - Uses multi-arch base image (works on arm64 + amd64)
+#   - gsutil proxy socket path: /tmp/gsutil-proxy.sock
+
+FROM python:3.12-slim-bookworm
+
+LABEL maintainer="atom-security"
+LABEL description="Hardened sandbox container (macOS compatible) - no jailbreak possible"
+
+# Install common tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    gcc \
+    g++ \
+    make \
+    curl \
+    wget \
+    git \
+    vim-tiny \
+    ca-certificates \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# SECURITY HARDENING
+# ============================================================
+
+# 1. Create non-root user
+RUN groupadd -g 1000 sandbox && \
+    useradd -u 1000 -g sandbox -m -s /bin/bash sandbox
+
+# 2. Create workspace
+RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
+
+# 3. Remove ALL setuid/setgid binaries
+RUN find / -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
+
+# 4. Install MCP server dependencies while network is still available
+#    (must happen before apt/pip are removed below)
+RUN pip install --no-cache-dir \
+    "fastmcp>=2.0" \
+    "uvicorn[standard]>=0.27" \
+    "starlette>=0.36" \
+    "httpx>=0.24"
+
+# 5. Remove package managers
+RUN rm -f /usr/bin/apt-get /usr/bin/apt /usr/bin/dpkg
+
+# 6. Set restrictive umask
+RUN echo 'umask 0077' >> /home/sandbox/.bashrc
+
+# ============================================================
+# GSUTIL PROXY WRAPPER
+# ============================================================
+# Install the thin wrapper that talks to the host proxy via Unix socket.
+# The real gsutil + credentials live OUTSIDE the container.
+#
+# macOS note: socket path is /tmp/gsutil-proxy.sock instead of /var/run/
+COPY gsutil-wrapper-macos.sh /usr/local/bin/gsutil
+RUN chmod +x /usr/local/bin/gsutil
+
+# Switch to non-root user
+USER sandbox
+WORKDIR /workspace
+
+CMD ["/bin/bash"]
