@@ -19,7 +19,6 @@ Usage:
   python -m agent.agent --openai
   python -m agent.agent --verbose
   python -m agent.agent --mcp-url http://127.0.0.1:9100/sse
-  python -m agent.agent --socket /tmp/mcp-sandbox/mcp.sock  # legacy UDS
 """
 from __future__ import annotations
 
@@ -46,7 +45,6 @@ from agent.model import build_model, build_openai_model
 # ---------------------------------------------------------------------------
 
 DEFAULT_MCP_URL = "http://127.0.0.1:9100/sse"
-DEFAULT_SOCKET = "/tmp/mcp-sandbox/mcp.sock"  # legacy UDS fallback
 
 
 # ---------------------------------------------------------------------------
@@ -58,19 +56,6 @@ def _build_tcp_mcp_server(url: str) -> MCPServerSSE:
     return MCPServerSSE(
         url=url,
         http_client=httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=300.0),
-        ),
-    )
-
-
-def _build_uds_mcp_server(socket_path: str) -> MCPServerSSE:
-    """MCP over Unix domain socket — legacy Option 3."""
-    transport = httpx.AsyncHTTPTransport(uds=socket_path)
-    return MCPServerSSE(
-        url="http://sandbox/sse",
-        http_client=httpx.AsyncClient(
-            transport=transport,
-            base_url="http://sandbox",
             timeout=httpx.Timeout(30.0, read=300.0),
         ),
     )
@@ -92,13 +77,8 @@ def get_system_prompt() -> str:
 def build_agent(
     use_openai: bool = False,
     mcp_url: str = DEFAULT_MCP_URL,
-    socket_path: str | None = None,
 ) -> Agent:  # type: ignore[type-arg]
-    mcp_server = (
-        _build_uds_mcp_server(socket_path)
-        if socket_path
-        else _build_tcp_mcp_server(mcp_url)
-    )
+    mcp_server = _build_tcp_mcp_server(mcp_url)
     if use_openai:
         return Agent(
             model=build_openai_model(),
@@ -163,11 +143,8 @@ def _print_response(response: ModelResponse, verbose: bool) -> None:
 # Connectivity check
 # ---------------------------------------------------------------------------
 
-async def _check_reachable(mcp_url: str, socket_path: str | None) -> bool:
+async def _check_reachable(mcp_url: str) -> bool:
     """Return True if the MCP server is reachable."""
-    if socket_path:
-        from pathlib import Path
-        return Path(socket_path).exists()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=2.0)) as c:
             await c.get(mcp_url)
@@ -186,17 +163,14 @@ async def main(
     agent: Agent,  # type: ignore[type-arg]
     verbose: bool = False,
     mcp_url: str = DEFAULT_MCP_URL,
-    socket_path: str | None = None,
 ) -> None:
-    label = f"socket://{socket_path}" if socket_path else mcp_url
-
-    if not await _check_reachable(mcp_url, socket_path):
-        print(f"\u274c Cannot reach MCP server at {label}")
+    if not await _check_reachable(mcp_url):
+        print(f"\u274c Cannot reach MCP server at {mcp_url}")
         print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
         return
 
     print("\U0001f916 Atom Agent (MCP Sandbox)")
-    print(f"   MCP: {label}")
+    print(f"   MCP: {mcp_url}")
     print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
 
     async with agent:
@@ -273,12 +247,6 @@ def parse_args() -> argparse.Namespace:
         metavar="URL",
         help=f"MCP server SSE URL (default: {DEFAULT_MCP_URL})",
     )
-    p.add_argument(
-        "--socket",
-        default=None,
-        metavar="PATH",
-        help="Legacy: Unix socket path (overrides --mcp-url when set)",
-    )
     return p.parse_args()
 
 
@@ -287,14 +255,12 @@ if __name__ == "__main__":
     agent = build_agent(
         use_openai=args.openai,
         mcp_url=args.mcp_url,
-        socket_path=args.socket,
     )
     try:
         asyncio.run(main(
             agent,
             verbose=args.verbose,
             mcp_url=args.mcp_url,
-            socket_path=args.socket,
         ))
     except KeyboardInterrupt:
         print("\n\U0001f44b Bye!")
