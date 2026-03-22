@@ -11,9 +11,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_SCRIPT="${SCRIPT_DIR}/gsutil-proxy.py"
-PID_FILE="/var/run/gsutil-proxy.pid"
-SOCKET_PATH="/var/run/gsutil-proxy.sock"
-LOG_FILE="/var/log/gsutil-proxy.log"
+SOCKET_DIR="/tmp/gsutil-proxy"
+SOCKET_PATH="${SOCKET_DIR}/gsutil-proxy.sock"
+PID_FILE="/tmp/gsutil-proxy.pid"
+LOG_FILE="/tmp/gsutil-proxy.log"
 
 case "${1:-}" in
     start)
@@ -22,6 +23,8 @@ case "${1:-}" in
             exit 0
         fi
         echo "🚀 Starting gsutil proxy daemon..."
+        mkdir -p "${SOCKET_DIR}"
+        chmod 755 "${SOCKET_DIR}"
         touch "${LOG_FILE}"
         nohup python3 "${PROXY_SCRIPT}" >> "${LOG_FILE}" 2>&1 &
         echo $! > "${PID_FILE}"

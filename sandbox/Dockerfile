@@ -8,7 +8,7 @@
 #   --network=none  |  custom seccomp        |  PID/mem/cpu limits
 #   --tmpfs /tmp,/run,/workspace             |  UID 1000 (non-root)
 
-FROM python:3.12-slim-bookworm
+FROM python:3.13-slim-bookworm
 
 LABEL maintainer="atom-security"
 LABEL description="Hardened sandbox — no jailbreak possible"

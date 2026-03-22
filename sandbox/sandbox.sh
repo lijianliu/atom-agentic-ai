@@ -1,77 +1,47 @@
 #!/usr/bin/env bash
 # =============================================================================
-# sandbox.sh — Unified hardened sandbox launcher (Linux + macOS)
+# sandbox.sh — Hardened Docker sandbox manager
 # =============================================================================
 # Usage:
-#   ./sandbox.sh                             # interactive shell, no network
-#   ./sandbox.sh -- python3 app.py           # run command, no network
-#   ./sandbox.sh --network                   # interactive shell, with network
-#   ./sandbox.sh --network -- CMD            # run command, with network
-#   ./sandbox.sh --mcp                       # MCP server on TCP port 9100
-#   ./sandbox.sh --mcp --port 8811           # MCP server on custom port
-#   ./sandbox.sh --mcp --transport streamable-http
-#   ./sandbox.sh --mcp --detach              # background MCP container
-#   ./sandbox.sh --mcp --stop                # stop background MCP container
-#   ./sandbox.sh --mcp --shell               # debug shell in MCP image
+#   ./sandbox.sh build                    # (re)build the sandbox image
+#   ./sandbox.sh clean                    # stop container + remove image
+#   ./sandbox.sh start [--port PORT]      # start MCP server (detached)
+#   ./sandbox.sh stop                     # stop MCP server
+#   ./sandbox.sh status                   # show running state + port + uptime
+#   ./sandbox.sh shell                    # exec into running container
+#   ./sandbox.sh run -- CMD               # run one-off command in fresh container
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="hardened-sandbox:latest"
-MCP_CONTAINER_NAME="sandbox-mcp"
+CONTAINER_NAME="sandbox-mcp"
+DEFAULT_PORT=9100
 
 # ---------------------------------------------------------------------------
-# Defaults
+# Usage
 # ---------------------------------------------------------------------------
-NETWORK=false
-MCP_MODE=false
-DETACH=false
-SHELL_MODE=false
-STOP_MODE=false
-MCP_PORT=9100
-TRANSPORT="sse"
-USER_CMD=()
+usage() {
+    echo "Usage: $(basename "$0") <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  build                 (Re)build the sandbox image"
+    echo "  clean                 Stop container + remove image"
+    echo "  start [--port PORT]   Start MCP server detached (default port: ${DEFAULT_PORT})"
+    echo "  stop                  Stop MCP server"
+    echo "  status                Show running state, port, uptime"
+    echo "  shell                 Exec into running container"
+    echo "  run -- CMD            Run one-off command in a fresh container"
+    echo ""
+}
 
-# ---------------------------------------------------------------------------
-# Parse arguments
-# ---------------------------------------------------------------------------
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --network|-n)  NETWORK=true; shift ;;
-        --mcp)         MCP_MODE=true; shift ;;
-        --detach|-d)   DETACH=true; shift ;;
-        --stop)        STOP_MODE=true; shift ;;
-        --shell)       SHELL_MODE=true; shift ;;
-        --port)        MCP_PORT="$2"; shift 2 ;;
-        --transport)   TRANSPORT="$2"; shift 2 ;;
-        --)            shift; USER_CMD=("$@"); break ;;
-        -*)
-            echo "Unknown option: $1"
-            echo ""
-            echo "Usage: $0 [OPTIONS] [-- COMMAND]"
-            echo ""
-            echo "  --network, -n          Enable outbound network (non-MCP shells)"
-            echo "  --mcp                  Launch MCP server on TCP (default port: 9100)"
-            echo "  --port PORT            MCP TCP port (default: 9100)"
-            echo "  --transport TRANSPORT  sse | streamable-http (default: sse)"
-            echo "  --detach, -d           Run MCP container in background"
-            echo "  --stop                 Stop background MCP container"
-            echo "  --shell                Debug shell inside container"
-            echo "  -- COMMAND             Run a specific command"
-            exit 1 ;;
-        *) USER_CMD=("$@"); break ;;
-    esac
-done
-
-# MCP always needs the container port exposed
-[ "${MCP_MODE}" = true ] && NETWORK=true
-
-# Non-MCP containers get unique names; MCP reuses a fixed name for --stop
-if [ "${MCP_MODE}" = false ]; then
-    CONTAINER_NAME="sandbox-$(date +%s)"
-else
-    CONTAINER_NAME="${MCP_CONTAINER_NAME}"
+if [ $# -eq 0 ]; then
+    usage
+    exit 0
 fi
+
+COMMAND="$1"
+shift
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -88,143 +58,265 @@ esac
 # macOS Docker mounts don't support noexec/nosuid on tmpfs
 if [ "${OS}" = "Darwin" ]; then
     TMPFS_OPTS="rw"
-    GSUTIL_SOCK="/tmp/gsutil-proxy.sock"
 else
     TMPFS_OPTS="rw,noexec,nosuid"
-    GSUTIL_SOCK="/var/run/gsutil-proxy.sock"
 fi
 
+GSUTIL_SOCK_DIR="/tmp/gsutil-proxy"
 SECCOMP_PROFILE="${SCRIPT_DIR}/seccomp-strict.json"
 
 # ---------------------------------------------------------------------------
-# Stop mode
+# Helpers
 # ---------------------------------------------------------------------------
-if [ "${STOP_MODE}" = true ]; then
-    echo "🛑 Stopping ${CONTAINER_NAME}..."
-    docker stop "${CONTAINER_NAME}" 2>/dev/null \
-        && echo "   ✅ Container stopped." \
-        || echo "   ⚠️  Container not running."
-    docker rm "${CONTAINER_NAME}" 2>/dev/null || true
-    exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Pre-flight: Docker daemon
-# ---------------------------------------------------------------------------
-if ! command -v docker &>/dev/null; then
-    echo "❌ Docker not found."
-    [ "${OS}" = "Darwin" ] \
-        && echo "   Install: brew install docker colima" \
-        || echo "   Install: https://docs.docker.com/engine/install/"
-    exit 1
-fi
-
-if ! docker info &>/dev/null; then
-    if [ "${OS}" = "Darwin" ] && command -v colima &>/dev/null; then
-        echo "⏳ Docker not reachable — trying Colima..."
-        if colima status &>/dev/null; then
-            docker context use colima &>/dev/null
-        else
-            colima start
-            docker context use colima &>/dev/null
-        fi
+ensure_docker() {
+    if ! command -v docker &>/dev/null; then
+        echo "❌ Docker not found."
+        [ "${OS}" = "Darwin" ] \
+            && echo "   Install: brew install docker colima" \
+            || echo "   Install: https://docs.docker.com/engine/install/"
+        exit 1
     fi
-    docker info &>/dev/null || { echo "❌ Docker daemon not running."; exit 1; }
-fi
-echo "✅ Docker daemon running ($(docker context show 2>/dev/null || echo 'default'))"
+    if ! docker info &>/dev/null; then
+        if [ "${OS}" = "Darwin" ] && command -v colima &>/dev/null; then
+            echo "⏳ Docker not reachable — trying Colima..."
+            if colima status &>/dev/null; then
+                docker context use colima &>/dev/null
+            else
+                colima start
+                docker context use colima &>/dev/null
+            fi
+        fi
+        docker info &>/dev/null || { echo "❌ Docker daemon not running."; exit 1; }
+    fi
+    echo "✅ Docker daemon running ($(docker context show 2>/dev/null || echo 'default'))"
+}
 
-# ---------------------------------------------------------------------------
-# Build image if missing
-# ---------------------------------------------------------------------------
-if ! docker image inspect "${IMAGE_NAME}" &>/dev/null; then
-    echo "🐶 Building hardened sandbox image (platform: ${DOCKER_PLATFORM})..."
+is_running() {
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"
+}
+
+ensure_image() {
+    if ! docker image inspect "${IMAGE_NAME}" &>/dev/null; then
+        echo "🐶 Image not found — building first..."
+        do_build
+    fi
+}
+
+do_build() {
+    echo "🐶 Building sandbox image (platform: ${DOCKER_PLATFORM})..."
     docker build \
         --platform "${DOCKER_PLATFORM}" \
         -t "${IMAGE_NAME}" \
         "${SCRIPT_DIR}"
-fi
+    echo "✅ Image built: ${IMAGE_NAME}"
+}
+
+gsutil_mount() {
+    mkdir -p "${GSUTIL_SOCK_DIR}"
+    echo "-v ${GSUTIL_SOCK_DIR}:/tmp/gsutil-proxy"
+}
+
+base_docker_flags() {
+    local port="$1"
+    echo "\
+        --platform ${DOCKER_PLATFORM} \
+        --log-driver=json-file \
+        --user 1000:1000 \
+        --cap-drop=ALL \
+        --security-opt=no-new-privileges:true \
+        --security-opt seccomp=${SECCOMP_PROFILE} \
+        --read-only \
+        --tmpfs /tmp:${TMPFS_OPTS},size=256m \
+        --tmpfs /run:${TMPFS_OPTS},size=64m \
+        --tmpfs /workspace:rw,uid=1000,gid=1000,size=1g \
+        --pids-limit=256 \
+        --memory=2g \
+        --memory-swap=2g \
+        --cpus=2 \
+        --ipc=private \
+        --ulimit nproc=512:512 \
+        --ulimit fsize=104857600:104857600 \
+        --ulimit nofile=1024:2048"
+}
 
 # ---------------------------------------------------------------------------
-# Optional: gsutil proxy socket
+# Commands
 # ---------------------------------------------------------------------------
-GSUTIL_MOUNT=()
-if [ -S "${GSUTIL_SOCK}" ]; then
-    GSUTIL_MOUNT=(-v "${GSUTIL_SOCK}:/tmp/gsutil-proxy.sock")
-    echo "   ✅ gsutil proxy mounted (${GSUTIL_SOCK})"
-else
-    echo "   ⚠️  gsutil proxy not running (optional; start with: python3 gsutil-proxy.py)"
-fi
+cmd_build() {
+    ensure_docker
+    do_build
+}
+
+cmd_clean() {
+    ensure_docker
+    # Remove all containers (running or stopped) using this image
+    local containers
+    containers=$(docker ps -a --filter "ancestor=${IMAGE_NAME}" --format '{{.ID}}' 2>/dev/null || true)
+    if [ -n "${containers}" ]; then
+        echo "🛑 Removing containers using ${IMAGE_NAME}..."
+        echo "${containers}" | xargs docker rm -f
+        echo "   ✅ Containers removed."
+    else
+        echo "   ℹ️  No containers to remove."
+    fi
+    if docker image inspect "${IMAGE_NAME}" &>/dev/null; then
+        echo "🗑️  Removing image ${IMAGE_NAME}..."
+        docker rmi -f "${IMAGE_NAME}"
+        echo "   ✅ Image removed."
+    else
+        echo "   ℹ️  Image not found."
+    fi
+}
+
+cmd_start() {
+    local port="${DEFAULT_PORT}"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port) port="$2"; shift 2 ;;
+            *) echo "Unknown option: $1"; usage; exit 1 ;;
+        esac
+    done
+
+    ensure_docker
+    ensure_image
+
+    # Evict stale container
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+        echo "⏳ Removing stale ${CONTAINER_NAME}..."
+        docker rm -f "${CONTAINER_NAME}" &>/dev/null
+    fi
+
+    mkdir -p "${GSUTIL_SOCK_DIR}"
+
+    echo ""
+    echo "🔒 Starting sandbox: ${CONTAINER_NAME}"
+    echo "   Platform: ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
+    echo "   MCP:      http://127.0.0.1:${port}/sse"
+    echo "   Security: cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
+    echo "   Limits:   memory=2g | cpus=2 | pids=256"
+    echo ""
+
+    docker run \
+        --name "${CONTAINER_NAME}" \
+        --rm \
+        -d \
+        --platform "${DOCKER_PLATFORM}" \
+        --log-driver=json-file \
+        --user 1000:1000 \
+        --cap-drop=ALL \
+        --security-opt=no-new-privileges:true \
+        --security-opt seccomp="${SECCOMP_PROFILE}" \
+        --read-only \
+        --tmpfs "/tmp:${TMPFS_OPTS},size=256m" \
+        --tmpfs "/run:${TMPFS_OPTS},size=64m" \
+        --tmpfs "/workspace:rw,uid=1000,gid=1000,size=1g" \
+        -p "127.0.0.1:${port}:${port}" \
+        --pids-limit=256 \
+        --memory=2g \
+        --memory-swap=2g \
+        --cpus=2 \
+        --ipc=private \
+        --ulimit nproc=512:512 \
+        --ulimit fsize=104857600:104857600 \
+        --ulimit nofile=1024:2048 \
+        -v "${GSUTIL_SOCK_DIR}:/tmp/gsutil-proxy" \
+        "${IMAGE_NAME}" \
+        python3 /opt/mcp/mcp_server.py --port "${port}" --transport sse
+
+    echo "✅ Sandbox started — MCP at http://127.0.0.1:${port}/sse"
+}
+
+cmd_stop() {
+    ensure_docker
+    if is_running; then
+        echo "🛑 Stopping ${CONTAINER_NAME}..."
+        docker rm -f "${CONTAINER_NAME}" &>/dev/null
+        echo "   ✅ Stopped."
+    else
+        echo "   ⚠️  Container not running."
+    fi
+}
+
+cmd_status() {
+    ensure_docker
+    if is_running; then
+        local uptime
+        uptime=$(docker inspect --format '{{.State.StartedAt}}' "${CONTAINER_NAME}" 2>/dev/null || echo 'unknown')
+        local port
+        port=$(docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || echo 'unknown')
+        echo "✅ ${CONTAINER_NAME} is running"
+        echo "   Started: ${uptime}"
+        echo "   Port:    ${port}"
+        echo "   MCP:     http://127.0.0.1:${DEFAULT_PORT}/sse"
+    else
+        echo "❌ ${CONTAINER_NAME} is not running"
+    fi
+}
+
+cmd_shell() {
+    ensure_docker
+    if ! is_running; then
+        echo "❌ ${CONTAINER_NAME} is not running. Start it first: $(basename "$0") start"
+        exit 1
+    fi
+    echo "🐚 Exec-ing into ${CONTAINER_NAME}..."
+    exec docker exec -it "${CONTAINER_NAME}" /bin/bash
+}
+
+cmd_run() {
+    if [ $# -eq 0 ] || [ "$1" != "--" ]; then
+        echo "Usage: $(basename "$0") run -- CMD"
+        exit 1
+    fi
+    shift  # drop the --
+
+    ensure_docker
+    ensure_image
+    mkdir -p "${GSUTIL_SOCK_DIR}"
+
+    echo "🔒 Running in fresh sandbox: $*"
+    docker run \
+        --name "sandbox-run-$(date +%s)" \
+        --rm \
+        -it \
+        --platform "${DOCKER_PLATFORM}" \
+        --log-driver=json-file \
+        --user 1000:1000 \
+        --cap-drop=ALL \
+        --security-opt=no-new-privileges:true \
+        --security-opt seccomp="${SECCOMP_PROFILE}" \
+        --read-only \
+        --tmpfs "/tmp:${TMPFS_OPTS},size=256m" \
+        --tmpfs "/run:${TMPFS_OPTS},size=64m" \
+        --tmpfs "/workspace:rw,uid=1000,gid=1000,size=1g" \
+        --network=none \
+        --pids-limit=256 \
+        --memory=2g \
+        --memory-swap=2g \
+        --cpus=2 \
+        --ipc=private \
+        --ulimit nproc=512:512 \
+        --ulimit fsize=104857600:104857600 \
+        --ulimit nofile=1024:2048 \
+        -v "${GSUTIL_SOCK_DIR}:/tmp/gsutil-proxy" \
+        "${IMAGE_NAME}" "$@"
+}
 
 # ---------------------------------------------------------------------------
-# Evict stale MCP container before relaunching
+# Dispatch
 # ---------------------------------------------------------------------------
-if [ "${MCP_MODE}" = true ] \
-    && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
-    echo "⏳ Removing stale ${CONTAINER_NAME}..."
-    docker rm -f "${CONTAINER_NAME}" &>/dev/null || true
-fi
-
-# ---------------------------------------------------------------------------
-# Build docker run flags
-# ---------------------------------------------------------------------------
-NETWORK_FLAGS=()
-[ "${NETWORK}" = false ] && NETWORK_FLAGS=(--network=none)
-
-PORT_FLAGS=()
-[ "${MCP_MODE}" = true ] && PORT_FLAGS=(-p "127.0.0.1:${MCP_PORT}:${MCP_PORT}")
-
-# Determine command + interactive flags
-if [ "${SHELL_MODE}" = true ] || { [ "${MCP_MODE}" = false ] && [ ${#USER_CMD[@]} -eq 0 ]; }; then
-    CMD=("/bin/bash")
-    IFLAGS=("-it")
-elif [ "${MCP_MODE}" = true ]; then
-    CMD=("python3" "/opt/mcp/mcp_server.py"
-         "--port" "${MCP_PORT}"
-         "--transport" "${TRANSPORT}")
-    IFLAGS=()
-    [ "${DETACH}" = true ] && IFLAGS=("-d")
-else
-    CMD=("${USER_CMD[@]}")
-    IFLAGS=("-it")
-fi
-
-# ---------------------------------------------------------------------------
-# Launch
-# ---------------------------------------------------------------------------
-echo ""
-echo "🔒 Launching hardened sandbox: ${CONTAINER_NAME}"
-echo "   Platform: ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
-echo "   Network:  $([ "${NETWORK}" = true ] && echo 'enabled' || echo 'none (maximum isolation)')"
-[ "${MCP_MODE}" = true ] && echo "   MCP:      http://127.0.0.1:${MCP_PORT}/sse  [transport=${TRANSPORT}]"
-echo "   Security: cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
-echo "   Limits:   memory=2g | cpus=2 | pids=256"
-echo ""
-
-docker run \
-    --name "${CONTAINER_NAME}" \
-    --rm \
-    "${IFLAGS[@]+${IFLAGS[@]}}" \
-    --platform "${DOCKER_PLATFORM}" \
-    --log-driver=json-file \
-    --user 1000:1000 \
-    --cap-drop=ALL \
-    --security-opt=no-new-privileges:true \
-    --security-opt seccomp="${SECCOMP_PROFILE}" \
-    --read-only \
-    --tmpfs "/tmp:${TMPFS_OPTS},size=256m" \
-    --tmpfs "/run:${TMPFS_OPTS},size=64m" \
-    --tmpfs "/workspace:rw,uid=1000,gid=1000,size=1g" \
-    "${NETWORK_FLAGS[@]+${NETWORK_FLAGS[@]}}" \
-    "${PORT_FLAGS[@]+${PORT_FLAGS[@]}}" \
-    --pids-limit=256 \
-    --memory=2g \
-    --memory-swap=2g \
-    --cpus=2 \
-    --ipc=private \
-    --ulimit nproc=512:512 \
-    --ulimit fsize=104857600:104857600 \
-    --ulimit nofile=1024:2048 \
-    "${GSUTIL_MOUNT[@]+${GSUTIL_MOUNT[@]}}" \
-    "${IMAGE_NAME}" "${CMD[@]}"
-
-echo "🐶 Container exited. Host is safe!"
+case "${COMMAND}" in
+    build)  cmd_build "$@" ;;
+    clean)  cmd_clean "$@" ;;
+    start)  cmd_start "$@" ;;
+    stop)   cmd_stop "$@" ;;
+    status) cmd_status "$@" ;;
+    shell)  cmd_shell "$@" ;;
+    run)    cmd_run "$@" ;;
+    *)
+        echo "❌ Unknown command: ${COMMAND}"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

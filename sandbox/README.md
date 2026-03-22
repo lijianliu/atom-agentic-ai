@@ -1,7 +1,7 @@
 # 🔒 Hardened Sandbox Container
 
 A maximally locked-down Docker container that prevents **any** code running inside
-from escaping, damaging, or even seeing the host VM.
+from escaping, damaging, or even seeing the host.
 
 ## Security Layers
 
@@ -12,50 +12,41 @@ from escaping, damaging, or even seeing the host VM.
 | **`--no-new-privileges`** | Blocks setuid/sudo escalation |
 | **Read-only rootfs** | Container filesystem is immutable |
 | **Custom seccomp** | Whitelist-only syscall filter |
-| **`--network=none`** | Zero network access (default) |
+| **Network isolated** | No outbound internet (port 9100 localhost-only) |
 | **PID isolation** | Max 256 processes |
-| **Memory cap** | Hard 2GB limit, no swap abuse |
+| **Memory cap** | Hard 2GB limit |
 | **CPU cap** | Max 2 cores |
 | **IPC isolation** | `--ipc=private` |
-| **No host mounts** | Zero access to host filesystem |
-| **tmpfs noexec** | /tmp and /run can't run binaries |
+| **tmpfs noexec** | `/tmp` and `/run` can't run binaries |
 | **No SUID binaries** | All setuid bits stripped |
 | **No pkg manager** | apt/dpkg removed from image |
 
 ## Quick Start
 
 ```bash
-chmod +x sandbox.sh
+# (re)build the image
+./sandbox.sh build
 
-# Interactive shell, NO network (maximum isolation)
-./sandbox.sh
+# start MCP server (detached, port 9100)
+./sandbox.sh start
 
-# Run a one-off command, no network
-./sandbox.sh -- python3 -c "print('hello from jail')"
+# custom port
+./sandbox.sh start --port 8811
 
-# Interactive shell WITH network
-./sandbox.sh --network
+# stop MCP server
+./sandbox.sh stop
 
-# Run a command WITH network
-./sandbox.sh --network -- pip install requests
+# is it running?
+./sandbox.sh status
 
-# MCP server on TCP port 9100 (default, localhost-only)
-./sandbox.sh --mcp
+# exec into the running container
+./sandbox.sh shell
 
-# MCP server on a custom port
-./sandbox.sh --mcp --port 8811
+# run a one-off command in a fresh container
+./sandbox.sh run -- python3 -c "print('hello from jail')"
 
-# MCP server in the background
-./sandbox.sh --mcp --detach
-
-# Stop the background MCP container
-./sandbox.sh --mcp --stop
-
-# Drop into a debug shell
-./sandbox.sh --mcp --shell
-
-# MCP over streamable-HTTP instead of SSE
-./sandbox.sh --mcp --transport streamable-http
+# stop container + remove image
+./sandbox.sh clean
 ```
 
 Works on **Linux and macOS** (Apple Silicon + Intel). Automatically detects
@@ -79,11 +70,25 @@ Connect your MCP client to: `http://127.0.0.1:9100/sse` (default port)
 
 Test it with: `python3 sandbox/test-mcp.py` (or `--port PORT` for a custom port)
 
+## gsutil Proxy
+
+The sandbox has no credentials or network access. gsutil commands are forwarded
+via Unix socket to a proxy running on the host.
+
+```bash
+./gsutil-proxy-ctl.sh start    # start proxy
+./gsutil-proxy-ctl.sh stop     # stop proxy
+./gsutil-proxy-ctl.sh status   # check status
+```
+
+The proxy can be started or restarted at any time without restarting the
+container. See [`docs/proxy-design.md`](../docs/proxy-design.md) for design details.
+
 ## What can the container NOT do?
 
 - ❌ Access host filesystem
 - ❌ See host processes
-- ❌ Access host network (default)
+- ❌ Access the internet
 - ❌ Escalate to root
 - ❌ Load kernel modules
 - ❌ Mount filesystems
@@ -91,12 +96,11 @@ Test it with: `python3 sandbox/test-mcp.py` (or `--port PORT` for a custom port)
 - ❌ Fork-bomb (PID limit)
 - ❌ OOM-kill the host (memory cap)
 - ❌ Starve host CPU (CPU cap)
-- ❌ Write to container OS files (read-only)
+- ❌ Write to container OS files (read-only rootfs)
 - ❌ Execute binaries from /tmp (noexec)
 
 ## Customization
 
-- **Need network?** Use `./sandbox.sh --network`
-- **Need to mount files in?** Add `-v /host/path:/workspace/data:ro` (read-only!) to `sandbox.sh`
 - **Need more memory?** Edit `--memory=2g` in `sandbox.sh`
-- **Need specific tools?** Edit `Dockerfile` and rebuild (image rebuilds automatically on next run)
+- **Need specific tools?** Edit `Dockerfile` and run `./sandbox.sh build`
+- **Need a different port?** `./sandbox.sh start --port 8811`

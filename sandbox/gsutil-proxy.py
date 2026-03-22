@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-SOCKET_PATH = "/var/run/gsutil-proxy.sock"
+SOCKET_PATH = "/tmp/gsutil-proxy/gsutil-proxy.sock"
 POLICY_PATH = os.environ.get(
     "GSUTIL_POLICY", str(Path(__file__).parent / "gsutil-policy.json")
 )
@@ -227,7 +227,7 @@ def cleanup_socket():
 def main():
     # Set up logging
     policy = load_policy(POLICY_PATH)
-    log_file = policy.get("log_file", "/var/log/gsutil-proxy.log")
+    log_file = policy.get("log_file", "/tmp/gsutil-proxy.log")
 
     logging.basicConfig(
         level=logging.INFO,

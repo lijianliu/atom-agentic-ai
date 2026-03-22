@@ -10,11 +10,14 @@ hardened Docker sandbox, never on the host machine.
 ```
 ./run.sh
    │
-   ├── 1. starts sandbox-mcp Docker container (if not already running)
+   ├── 1. starts gsutil proxy on host (if not running)
+   │       └─ forwards gsutil commands from sandbox → real gcloud credentials
+   │
+   ├── 2. starts sandbox-mcp Docker container (if not already running)
    │       └─ hardened: --cap-drop=ALL, --read-only, seccomp, uid=1000
    │       └─ MCP server on 127.0.0.1:9100 (tools jailed to /workspace)
    │
-   └── 2. starts the agent (connects to sandbox via HTTP/SSE)
+   └── 3. starts the agent (connects to sandbox via HTTP/SSE)
            └─ tools: execute_command, read_file, write_file, list_dir, ...
            └─ nothing executes on the host
 ```
@@ -40,7 +43,7 @@ export LLM_GATEWAY_URL=<gateway-base-url>
 export MODEL_NAME=<model-name>          # e.g. claude-sonnet-4-5
 export LLM_GATEWAY_HEADER='{"x-header": "value"}'  # optional
 
-# OR: OpenAI direct (outside corporate network only)
+# OR: OpenAI direct
 # export PERSONAL_OPENAI_API_KEY=sk-...
 ```
 
@@ -49,42 +52,17 @@ export LLM_GATEWAY_HEADER='{"x-header": "value"}'  # optional
 Only needed once (or after changes to `sandbox/`):
 
 ```bash
-docker build --platform linux/arm64 \
-  -t hardened-sandbox-mcp:latest \
-  -f sandbox/Dockerfile.mcp \
-  sandbox/
+./sandbox/sandbox.sh build
 ```
 
-> **Apple Intel?** Replace `linux/arm64` with `linux/amd64`.
-
-### Step 4 — Start the sandbox
-
-```bash
-bash sandbox/run-mcp-macos.sh
-```
-
-You should see:
-
-```
-✅ Container sandbox-mcp started
-   MCP endpoint: http://localhost:9100/sse
-```
-
-Verify everything is wired up:
-
-```bash
-python3 sandbox/test-mcp.py
-# 🎉  All tests passed! (0.1s)
-```
-
-### Step 5 — Run the agent
+### Step 4 — Run the agent
 
 ```bash
 ./run.sh
 ```
 
-That’s it. The script auto-starts the sandbox if it’s not running, syncs
-dependencies, and drops you into the agent REPL.
+That's it. The script auto-starts the gsutil proxy and sandbox container,
+syncs dependencies, and drops you into the agent REPL.
 
 ---
 
@@ -105,34 +83,40 @@ dependencies, and drops you into the agent REPL.
 
 ---
 
-## Entering the sandbox
-
-To inspect the running container interactively:
-
-```bash
-docker exec -it sandbox-mcp /bin/sh
-```
-
-You land as `uid=1000(sandbox)` inside `/workspace`. The rootfs is read-only
-— only `/workspace`, `/tmp`, and `/run` are writable tmpfs mounts.
-
----
-
 ## Sandbox management
 
 ```bash
-# Status
-docker ps --filter name=sandbox-mcp
-
-# Logs
-docker logs sandbox-mcp
-
-# Stop
-docker stop sandbox-mcp
-
-# Restart
-docker rm -f sandbox-mcp && bash sandbox/run-mcp-macos.sh
+./sandbox/sandbox.sh build              # (re)build the image
+./sandbox/sandbox.sh start              # start MCP server
+./sandbox/sandbox.sh start --port 8811  # custom port
+./sandbox/sandbox.sh stop               # stop MCP server
+./sandbox/sandbox.sh status             # running? port? uptime?
+./sandbox/sandbox.sh shell              # exec into running container
+./sandbox/sandbox.sh run -- python3 foo.py  # one-off command
+./sandbox/sandbox.sh clean              # stop container + remove image
 ```
+
+### Nuke and rebuild
+
+```bash
+./sandbox/sandbox.sh clean && ./sandbox/sandbox.sh build && ./sandbox/sandbox.sh start
+```
+
+---
+
+## gsutil proxy
+
+The sandbox has no credentials or network access. gsutil commands are
+forwarded via Unix socket to a proxy running on the host.
+
+```bash
+./sandbox/gsutil-proxy-ctl.sh start    # start proxy
+./sandbox/gsutil-proxy-ctl.sh stop     # stop proxy
+./sandbox/gsutil-proxy-ctl.sh status   # check status
+```
+
+`run.sh` starts the proxy automatically. You can restart it anytime without
+touching the sandbox container. See [`docs/proxy-design.md`](docs/proxy-design.md).
 
 ---
 
@@ -140,19 +124,24 @@ docker rm -f sandbox-mcp && bash sandbox/run-mcp-macos.sh
 
 ```
 atom-agentic-ai/
-├── run.sh                      # ⭐ start here
+├── run.sh                          # ⭐ start here
 ├── agent/
-│   ├── agent.py                # agent REPL — connects to MCP sandbox
-│   ├── model.py                # LLM model factory
+│   ├── agent.py                    # agent REPL — connects to MCP sandbox
+│   ├── model.py                    # LLM model factory
 │   └── __init__.py
 ├── sandbox/
-│   ├── mcp_server.py           # MCP server (runs inside Docker)
-│   ├── Dockerfile.mcp          # hardened container image
-│   ├── run-mcp-macos.sh        # launch sandbox container
-│   ├── test-mcp.py             # smoke test (stdlib only, ~0.1s)
-│   └── seccomp-strict-macos.json
+│   ├── sandbox.sh                  # sandbox manager (build/start/stop/shell/...)
+│   ├── mcp_server.py               # MCP server (runs inside Docker)
+│   ├── Dockerfile                  # hardened container image
+│   ├── gsutil-proxy.py             # host-side gsutil proxy daemon
+│   ├── gsutil-proxy-ctl.sh         # start/stop/status for gsutil proxy
+│   ├── gsutil-wrapper.sh           # in-container gsutil thin client
+│   ├── gsutil-policy.json          # allowed commands + buckets
+│   ├── test-mcp.py                 # smoke test (stdlib only, ~0.1s)
+│   └── seccomp-strict.json         # syscall allowlist
 ├── docs/
-│   └── mcp-design.md           # MCP transport options + curl testing guide
+│   ├── mcp-design.md               # MCP transport options + curl guide
+│   └── proxy-design.md             # gsutil proxy design options
 ├── pyproject.toml
 └── uv.lock
 ```
@@ -179,3 +168,5 @@ export UV_INSECURE_HOST=your-internal-pypi-mirror
 
 - [`docs/mcp-design.md`](docs/mcp-design.md) — all MCP transport options,
   tradeoffs, how SSE works, and a full curl testing guide
+- [`docs/proxy-design.md`](docs/proxy-design.md) — gsutil proxy design options
+  and why we mount a directory instead of a socket file

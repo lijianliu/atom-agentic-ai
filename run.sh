@@ -59,17 +59,21 @@ else
   echo "Skipping dependency update (--skip-update)"
 fi
 
+# ---- Start gsutil proxy if not running ----
+GSUTIL_SOCK="/tmp/gsutil-proxy/gsutil-proxy.sock"
+if [ -S "$GSUTIL_SOCK" ]; then
+  echo "✅ gsutil proxy already running"
+else
+  "${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" start
+fi
+
 # ---- Start hardened Docker sandbox if not running ----
 if [ "$NO_SANDBOX" = false ]; then
   CONTAINER_NAME="sandbox-mcp"
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
     echo "✅ Hardened sandbox already running (${CONTAINER_NAME})"
   else
-    echo ""
-    echo "🐶 Starting hardened Docker sandbox with MCP server..."
-    echo "   Port: ${MCP_PORT}"
-    echo ""
-    MCP_PORT="${MCP_PORT}" "${SCRIPT_DIR}/sandbox/run-mcp-macos.sh"
+    "${SCRIPT_DIR}/sandbox/sandbox.sh" start --port "${MCP_PORT}"
     echo ""
     # Wait for MCP server to be ready
     echo "⏳ Waiting for MCP server to be ready..."

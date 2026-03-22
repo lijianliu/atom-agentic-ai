@@ -3,14 +3,15 @@
 # Thin client that forwards gsutil commands to the host proxy via Unix socket.
 # Lives INSIDE the container; the real gsutil + credentials live OUTSIDE.
 #
-# Socket path: /tmp/gsutil-proxy.sock (mounted in by sandbox.sh)
+# Socket path: /tmp/gsutil-proxy/gsutil-proxy.sock (directory mounted in by sandbox.sh)
 set -euo pipefail
 
-SOCKET_PATH="/tmp/gsutil-proxy.sock"
+SOCKET_PATH="/tmp/gsutil-proxy/gsutil-proxy.sock"
 
 if [ ! -S "${SOCKET_PATH}" ]; then
     echo "ERROR: gsutil proxy socket not found at ${SOCKET_PATH}" >&2
-    echo "Start the proxy on the host: python3 gsutil-proxy.py" >&2
+    echo "The gsutil proxy service may not be running on the host." >&2
+    echo "On macOS, start it with: sandbox/gsutil-proxy-ctl.sh start" >&2
     exit 1
 fi
 
