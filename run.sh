@@ -102,4 +102,4 @@ echo ""
 echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
 echo "   MCP URL: ${MCP_URL}"
 echo ""
-.venv/bin/python -m agent.agent $AGENT_FLAGS
+.venv/bin/python agent/agent.py $AGENT_FLAGS

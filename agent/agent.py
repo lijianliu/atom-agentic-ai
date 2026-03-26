@@ -43,7 +43,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from agent.model import build_model, build_openai_model
+from model import build_model, build_openai_model
 
 # ---------------------------------------------------------------------------
 # Constants
