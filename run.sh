@@ -59,13 +59,10 @@ else
   echo "Skipping dependency update (--skip-update)"
 fi
 
-# ---- Start gsutil proxy if not running ----
-GSUTIL_SOCK="/tmp/gsutil-proxy/gsutil-proxy.sock"
-if [ -S "$GSUTIL_SOCK" ]; then
-  echo "✅ gsutil proxy already running"
-else
-  "${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" start
-fi
+# ---- Always restart gsutil proxy ----
+echo "🔄 Restarting gsutil proxy..."
+"${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" stop 2>/dev/null || true
+"${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" start
 
 # ---- Start hardened Docker sandbox if not running ----
 if [ "$NO_SANDBOX" = false ]; then
