@@ -73,9 +73,12 @@ if [ "$NO_SANDBOX" = false ]; then
     "${SCRIPT_DIR}/sandbox/sandbox.sh" start --port "${MCP_PORT}"
     echo ""
     # Wait for MCP server to be ready
+    # NOTE: SSE endpoints keep connections open, so curl's exit code is always
+    # non-zero (timeout/28) even when the server IS up. Check HTTP status instead.
     echo "⏳ Waiting for MCP server to be ready..."
     for i in $(seq 1 30); do
-      if curl -sf "http://127.0.0.1:${MCP_PORT}/sse" --max-time 1 -o /dev/null 2>/dev/null; then
+      http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:${MCP_PORT}/sse" 2>/dev/null || true)
+      if [ "$http_code" = "200" ]; then
         echo "   ✅ MCP server is ready!"
         break
       fi
