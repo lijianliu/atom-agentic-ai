@@ -98,8 +98,6 @@ AGENT_FLAGS="--mcp-url ${MCP_URL}"
 [ "$USE_OPENAI" = true ] && AGENT_FLAGS="$AGENT_FLAGS --openai"
 
 # ---- Run AtomAI (MCP mode) ----
-echo ""
 echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
 echo "   MCP URL: ${MCP_URL}"
-echo ""
 .venv/bin/python agent/agent.py $AGENT_FLAGS

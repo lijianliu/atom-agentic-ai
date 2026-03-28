@@ -200,6 +200,7 @@ class GCSLogger:
         """Full GCS URI, e.g. ``gs://my-bucket/logs/2026-03-27/<uuid>.jsonl``."""
         return f"gs://{self.bucket_name}/{self.blob_path}"
 
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

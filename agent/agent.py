@@ -113,9 +113,16 @@ def build_agent(
 # ---------------------------------------------------------------------------
 
 async def _check_reachable(mcp_url: str) -> bool:
-    """Return True if the MCP server is reachable."""
+    """Return True if the MCP server is reachable.
+
+    SSE endpoints stream forever, so a successful TCP connect is proof
+    enough.  We use a very short read timeout (0.3 s) to avoid blocking
+    startup — a ReadTimeout means "connected but streaming", which is fine.
+    """
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=2.0)) as c:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(3.0, read=0.3),
+        ) as c:
             await c.get(mcp_url)
     except httpx.ReadTimeout:
         return True  # SSE streams forever — timeout == connected
@@ -136,19 +143,17 @@ async def main(
 ) -> None:
     if not await _check_reachable(mcp_url):
         logger.error("Cannot reach MCP server at %s", mcp_url)
-        print(f"\u274c Cannot reach MCP server at {mcp_url}")
+        print(f"❌ Cannot reach MCP server at {mcp_url}")
         print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
         return
 
-    print("\U0001f916 Atom Agent (MCP Sandbox)")
-    print(f"   MCP: {mcp_url}")
-    print(f"   \U0001f4cb Log: {LOG_FILE_PATH}")
-    print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
+    print("🤖 Atom Agent (MCP Sandbox)")
+    print(f"   📋 Log: {LOG_FILE_PATH}")
 
     gcs_audit_logger = GCSLogger.from_env()
     if gcs_audit_logger:
         logger.info("GCS logging enabled → %s", gcs_audit_logger.gcs_uri)
-        print(f"   \U0001f4dd GCS logging → {gcs_audit_logger.gcs_uri}")
+        print(f"   📝 GCS: {gcs_audit_logger.gcs_uri}")
         await gcs_audit_logger.log("session_start", {
             "mcp_url": mcp_url,
             "model": "openai" if use_openai else "anthropic",
@@ -156,14 +161,15 @@ async def main(
         })
     else:
         logger.info("GCS logging disabled (ATOM_AUDIT_LOG_GCS_PATH not set)")
-        print("   \U0001f4dd GCS logging disabled (set ATOM_AUDIT_LOG_GCS_PATH to enable)")
+        print("   📝 GCS logging disabled (set ATOM_AUDIT_LOG_GCS_PATH to enable)")
 
+    print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
 
     async with agent:
         message_history: list = []
         while True:
             try:
-                prompt = input("\n\U0001f464 You: ")
+                prompt = input("\n👤 You: ")
             except (KeyboardInterrupt, EOFError):
                 print("  (interrupted)")
                 continue
@@ -176,7 +182,7 @@ async def main(
             if gcs_audit_logger:
                 await gcs_audit_logger.log("user_prompt", {"prompt": prompt})
 
-            print("\u23f3 Thinking... (Ctrl+C to cancel)")
+            print("⏳ Thinking... (Ctrl+C to cancel)")
             cancelled = False
             loop = asyncio.get_running_loop()
 
@@ -193,18 +199,18 @@ async def main(
                                         # A new response part is beginning;
                                         # the part may already carry initial content.
                                         if isinstance(event.part, ThinkingPart):
-                                            print("\n\U0001f9e0 Thinking: ", end="", flush=True)
+                                            print("\n💭 Thinking: ", end="", flush=True)
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, TextPart):
-                                            print("\n\U0001f4ac ", end="", flush=True)
+                                            print("\n💬 ", end="", flush=True)
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, ToolCallPart):
                                             tool_args_printed = 0  # reset for each new tool call
                                             if verbose:
                                                 args_str = str(event.part.args) if event.part.args else ""
-                                                print(f"\n\U0001f527 Tool: {event.part.tool_name}({args_str}", end="", flush=True)
+                                                print(f"\n🔧 Tool: {event.part.tool_name}({args_str}", end="", flush=True)
                                                 tool_args_printed += len(args_str)
                                     elif isinstance(event, PartDeltaEvent):
                                         if isinstance(event.delta, TextPartDelta):
@@ -235,12 +241,12 @@ async def main(
                                 uncached = new_t + cache_write
                                 line = (
                                     f"{in_t:,} in "
-                                    f"({new_t:,} new \u00b7 {cache_write:,} cache write \u00b7 {cache_read:,} cache read)"
-                                    f" [{cache_hit_pct:.0f}% hit \u00b7 {uncached:,} uncached]"
+                                    f"({new_t:,} new · {cache_write:,} cache write · {cache_read:,} cache read)"
+                                    f" [{cache_hit_pct:.0f}% hit · {uncached:,} uncached]"
                                     f" / {out_t:,} out"
                                     f" | {reqs} reqs / {tools} tools"
                                 )
-                                print(f"  \U0001f4ca [{line}]")
+                                print(f"  📊 [{line}]")
 
                         elif Agent.is_call_tools_node(node):
                             # Tools have been called — print a clean summary.
@@ -248,9 +254,9 @@ async def main(
                                 if isinstance(part, ToolCallPart):
                                     args_str = str(part.args)[:200] if part.args else ""
                                     if verbose:
-                                        print(f"  \u2699\ufe0f  [Executing] {part.tool_name}({args_str})")
+                                        print(f"  ⚙️  [Executing] {part.tool_name}({args_str})")
                                     else:
-                                        print(f"\U0001f527 Tool: {part.tool_name}({args_str})")
+                                        print(f"🔧 Tool: {part.tool_name}({args_str})")
                                     if gcs_audit_logger:
                                         await gcs_audit_logger.log("tool_call", {
                                             "tool": part.tool_name,
@@ -260,11 +266,11 @@ async def main(
 
                         elif Agent.is_end_node(node):
                             if verbose:
-                                print(f"VERBOSE> \u2705 [End] {str(node.data)[:200]}")
+                                print(f"VERBOSE> ✅ [End] {str(node.data)[:200]}")
 
                     result = run.result
                     message_history.extend(result.new_messages())
-                    print(f"\n\U0001f916 Agent: {result.output}")
+                    print(f"\n🤖 Agent: {result.output}")
 
                     usage = result.usage()
                     in_t = usage.input_tokens or 0
@@ -278,13 +284,13 @@ async def main(
                     uncached = new_t + cache_write
                     total_line = (
                         f"{in_t:,} in "
-                        f"({new_t:,} new \u00b7 {cache_write:,} cache write \u00b7 {cache_read:,} cache read)"
-                        f" [{cache_hit_pct:.0f}% hit \u00b7 {uncached:,} uncached]"
+                        f"({new_t:,} new · {cache_write:,} cache write · {cache_read:,} cache read)"
+                        f" [{cache_hit_pct:.0f}% hit · {uncached:,} uncached]"
                         f" / {out_t:,} out"
                         f" / {in_t + out_t:,} total"
                         f" | {reqs} reqs / {tools} tools"
                     )
-                    print(f"\n\U0001f4ca Total: {total_line}")
+                    print(f"\n📊 Total: {total_line}")
 
                     if gcs_audit_logger:
                         await gcs_audit_logger.log("agent_response", {
@@ -317,12 +323,13 @@ async def main(
                 loop.remove_signal_handler(signal.SIGINT)
 
             if cancelled:
-                print("\n\u26a0\ufe0f  Cancelled.")
+                print("\n⚠️  Cancelled.")
 
     if gcs_audit_logger:
+        print(f"\n📝 Flushing session log to {gcs_audit_logger.gcs_uri} ...")
         await gcs_audit_logger.close()
         logger.info("Session log flushed → %s", gcs_audit_logger.gcs_uri)
-        print(f"\n\U0001f4dd Session log flushed → {gcs_audit_logger.gcs_uri}")
+        print("   ✅ Done.")
 
 
 # ---------------------------------------------------------------------------
@@ -358,4 +365,4 @@ if __name__ == "__main__":
             use_openai=args.openai,
         ))
     except KeyboardInterrupt:
-        print("\n\U0001f44b Bye!")
+        print("\n👋 Bye!")
