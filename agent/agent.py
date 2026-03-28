@@ -26,9 +26,7 @@ import argparse
 import asyncio
 import signal
 
-import httpx
 from pydantic_ai import Agent
-from pydantic_ai.mcp import MCPServerSSE
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -44,31 +42,11 @@ from pydantic_ai.messages import (
 )
 
 from model import build_model, build_openai_model
+from mcp_helpers import DEFAULT_MCP_URL, build_tcp_mcp_server, check_mcp_reachable
 from gcs_audit_logger import GCSLogger
 from logging_config import setup_logging, get_logger, LOG_FILE_PATH
 
 logger = get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-DEFAULT_MCP_URL = "http://127.0.0.1:9100/sse"
-
-
-# ---------------------------------------------------------------------------
-# MCP server constructors
-# ---------------------------------------------------------------------------
-
-def _build_tcp_mcp_server(url: str) -> MCPServerSSE:
-    """MCP over plain TCP — the normal case."""
-    return MCPServerSSE(
-        url=url,
-        http_client=httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=300.0),
-        ),
-    )
-
 
 # ---------------------------------------------------------------------------
 # Agent factory
@@ -87,7 +65,7 @@ def build_agent(
     use_openai: bool = False,
     mcp_url: str = DEFAULT_MCP_URL,
 ) -> Agent:  # type: ignore[type-arg]
-    mcp_server = _build_tcp_mcp_server(mcp_url)
+    mcp_server = build_tcp_mcp_server(mcp_url)
     if use_openai:
         return Agent(
             model=build_openai_model(),
@@ -108,28 +86,6 @@ def build_agent(
     )
 
 
-# ---------------------------------------------------------------------------
-# Connectivity check
-# ---------------------------------------------------------------------------
-
-async def _check_reachable(mcp_url: str) -> bool:
-    """Return True if the MCP server is reachable.
-
-    SSE endpoints stream forever, so a successful TCP connect is proof
-    enough.  We use a very short read timeout (0.3 s) to avoid blocking
-    startup — a ReadTimeout means "connected but streaming", which is fine.
-    """
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(3.0, read=0.3),
-        ) as c:
-            await c.get(mcp_url)
-    except httpx.ReadTimeout:
-        return True  # SSE streams forever — timeout == connected
-    except Exception:
-        return False
-    return True
-
 
 # ---------------------------------------------------------------------------
 # Main REPL loop
@@ -141,7 +97,7 @@ async def main(
     mcp_url: str = DEFAULT_MCP_URL,
     use_openai: bool = False,
 ) -> None:
-    if not await _check_reachable(mcp_url):
+    if not await check_mcp_reachable(mcp_url):
         logger.error("Cannot reach MCP server at %s", mcp_url)
         print(f"❌ Cannot reach MCP server at {mcp_url}")
         print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")

@@ -138,7 +138,7 @@ access token from the currently active `gcloud` account. This means:
 - No service-account key files or `GOOGLE_APPLICATION_CREDENTIALS`
   env var required.
 - Tokens are cached and automatically refreshed when older than
-  `TOKEN_TTL_SECONDS` (default: 60 seconds for testing; gcloud tokens
+  `TOKEN_TTL_SECONDS` (default: 25 minutes; gcloud tokens
   are valid for ~60 minutes).
 
 The `GCSClientFactory` is thread-safe. Callers should **never cache**

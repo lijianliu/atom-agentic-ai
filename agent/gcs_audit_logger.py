@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover
 AUTO_FLUSH_EVERY = 50        # flush after this many pending events (safety valve)
 IDLE_FLUSH_AFTER = 60.0      # seconds of inactivity before background flush
 IDLE_CHECK_INTERVAL = 10.0   # how often the background task polls (seconds)
-TOKEN_TTL_SECONDS = 60       # re-fetch gcloud token after this many seconds
+TOKEN_TTL_SECONDS = 25 * 60   # re-fetch gcloud token after 25 minutes
 ENV_PATH = "ATOM_AUDIT_LOG_GCS_PATH"
 
 
