@@ -44,6 +44,10 @@ from pydantic_ai.messages import (
 )
 
 from model import build_model, build_openai_model
+from gcs_audit_logger import GCSLogger
+from logging_config import setup_logging, get_logger, LOG_FILE_PATH
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -128,15 +132,32 @@ async def main(
     agent: Agent,  # type: ignore[type-arg]
     verbose: bool = False,
     mcp_url: str = DEFAULT_MCP_URL,
+    use_openai: bool = False,
 ) -> None:
     if not await _check_reachable(mcp_url):
+        logger.error("Cannot reach MCP server at %s", mcp_url)
         print(f"\u274c Cannot reach MCP server at {mcp_url}")
         print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
         return
 
     print("\U0001f916 Atom Agent (MCP Sandbox)")
     print(f"   MCP: {mcp_url}")
+    print(f"   \U0001f4cb Log: {LOG_FILE_PATH}")
     print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
+
+    gcs_audit_logger = GCSLogger.from_env()
+    if gcs_audit_logger:
+        logger.info("GCS logging enabled → %s", gcs_audit_logger.gcs_uri)
+        print(f"   \U0001f4dd GCS logging → {gcs_audit_logger.gcs_uri}")
+        await gcs_audit_logger.log("session_start", {
+            "mcp_url": mcp_url,
+            "model": "openai" if use_openai else "anthropic",
+            "verbose": verbose,
+        })
+    else:
+        logger.info("GCS logging disabled (ATOM_AUDIT_LOG_GCS_PATH not set)")
+        print("   \U0001f4dd GCS logging disabled (set ATOM_AUDIT_LOG_GCS_PATH to enable)")
+
 
     async with agent:
         message_history: list = []
@@ -151,6 +172,9 @@ async def main(
                 break
             if not prompt.strip():
                 continue
+
+            if gcs_audit_logger:
+                await gcs_audit_logger.log("user_prompt", {"prompt": prompt})
 
             print("\u23f3 Thinking... (Ctrl+C to cancel)")
             cancelled = False
@@ -227,6 +251,12 @@ async def main(
                                         print(f"  \u2699\ufe0f  [Executing] {part.tool_name}({args_str})")
                                     else:
                                         print(f"\U0001f527 Tool: {part.tool_name}({args_str})")
+                                    if gcs_audit_logger:
+                                        await gcs_audit_logger.log("tool_call", {
+                                            "tool": part.tool_name,
+                                            "args_preview": args_str,
+                                        })
+
 
                         elif Agent.is_end_node(node):
                             if verbose:
@@ -256,6 +286,21 @@ async def main(
                     )
                     print(f"\n\U0001f4ca Total: {total_line}")
 
+                    if gcs_audit_logger:
+                        await gcs_audit_logger.log("agent_response", {
+                            "response": result.output,
+                        })
+                        await gcs_audit_logger.log("token_usage", {
+                            "input_tokens": in_t,
+                            "output_tokens": out_t,
+                            "cache_write_tokens": cache_write,
+                            "cache_read_tokens": cache_read,
+                            "new_tokens": new_t,
+                            "requests": reqs,
+                            "tool_calls": tools,
+                            "cache_hit_pct": round(cache_hit_pct, 1),
+                        })
+
             task = asyncio.ensure_future(_run())
 
             def _cancel(_):
@@ -273,6 +318,11 @@ async def main(
 
             if cancelled:
                 print("\n\u26a0\ufe0f  Cancelled.")
+
+    if gcs_audit_logger:
+        await gcs_audit_logger.close()
+        logger.info("Session log flushed → %s", gcs_audit_logger.gcs_uri)
+        print(f"\n\U0001f4dd Session log flushed → {gcs_audit_logger.gcs_uri}")
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +344,8 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    setup_logging()
+    logger.info("Atom Agent starting (openai=%s, mcp_url=%s)", args.openai, args.mcp_url)
     agent = build_agent(
         use_openai=args.openai,
         mcp_url=args.mcp_url,
@@ -303,6 +355,7 @@ if __name__ == "__main__":
             agent,
             verbose=args.verbose,
             mcp_url=args.mcp_url,
+            use_openai=args.openai,
         ))
     except KeyboardInterrupt:
         print("\n\U0001f44b Bye!")

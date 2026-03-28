@@ -11,6 +11,10 @@ from anthropic import AsyncAnthropic
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants — taken from environment
@@ -79,21 +83,17 @@ def build_openai_model(model_name: str = "gpt-4.1"):
         from pydantic_ai.models.openai import OpenAIResponsesModel
         from pydantic_ai.providers.openai import OpenAIProvider
     except ImportError:
-        print(
-            "ERROR: OpenAI support requires the 'openai' package.\n"
-            "Install it with:\n"
-            "  pip install pydantic-ai-slim[openai]",
-            file=sys.stderr,
+        logger.critical(
+            "OpenAI support requires the 'openai' package. "
+            "Install it with:  pip install pydantic-ai-slim[openai]"
         )
         sys.exit(1)
 
     api_key = os.environ.get("PERSONAL_OPENAI_API_KEY", "").strip()
     if not api_key:
-        print(
-            "ERROR: PERSONAL_OPENAI_API_KEY is not set.\n"
-            "Export it in your shell:\n"
-            "  export PERSONAL_OPENAI_API_KEY=<your-key>",
-            file=sys.stderr,
+        logger.critical(
+            "PERSONAL_OPENAI_API_KEY is not set. "
+            "Export it in your shell:  export PERSONAL_OPENAI_API_KEY=<your-key>"
         )
         sys.exit(1)
     provider = OpenAIProvider(api_key=api_key)
@@ -121,12 +121,10 @@ def _resolve_api_key() -> str:
     if key:
         return key
 
-    print(
-        "ERROR: LLM_API_KEY is not set.\n"
-        "Export it in your shell:\n"
-        "  export LLM_API_KEY=<your-key>\n"
-        "Or add it to ~/.zshrc and re-source it.",
-        file=sys.stderr,
+    logger.critical(
+        "LLM_API_KEY is not set. "
+        "Export it in your shell:  export LLM_API_KEY=<your-key>  "
+        "Or add it to ~/.zshrc and re-source it."
     )
     sys.exit(1)
 
