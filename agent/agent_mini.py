@@ -1,4 +1,5 @@
 import asyncio
+import readline  # noqa: F401 — enables arrow keys & history in input()
 import subprocess
 from pydantic_ai import Agent
 from model import build_model

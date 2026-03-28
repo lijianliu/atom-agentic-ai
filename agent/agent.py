@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import readline  # noqa: F401 — enables arrow keys & history in input()
 import signal
 
 from pydantic_ai import Agent

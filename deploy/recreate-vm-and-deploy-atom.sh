@@ -291,6 +291,11 @@ ssh $SSH_OPTS "${REMOTE_USER}@${INTERNAL_IP}" bash <<'REMOTE_DOCKER'
 REMOTE_DOCKER
 ok "Docker installed and running"
 
+# ── Step 11: Setup gcloud auth on VM ─────────────────────────────────────────
+step "1️⃣ 1️⃣" "Setting up gcloud auth on VM..."
+"${SCRIPT_DIR}/setup-gcloud.sh" "${INTERNAL_IP}"
+ok "gcloud auth configured on VM"
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Summary
 # ═════════════════════════════════════════════════════════════════════════════
