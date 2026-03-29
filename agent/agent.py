@@ -129,7 +129,7 @@ async def main(
         message_history: list = []
         while True:
             try:
-                prompt = input("\n\033[97;48;5;39m👤 You:\033[0m ")
+                prompt = input("\n👤 You: ")
             except (KeyboardInterrupt, EOFError):
                 print("  (interrupted)")
                 continue
@@ -159,19 +159,18 @@ async def main(
                                         # A new response part is beginning;
                                         # the part may already carry initial content.
                                         if isinstance(event.part, ThinkingPart):
-                                            print("\n\033[48;5;17m💭 Thinking:\033[0m ", end="", flush=True)
+                                            print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, TextPart):
-                                            print("\n\033[48;5;22m💬 Text\033[0m ", end="", flush=True)
+                                            print("\n\033[48;5;22m💬 [Text]\033[0m ", end="", flush=True)
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, ToolCallPart):
                                             tool_args_printed = 0  # reset for each new tool call
-                                            if verbose:
-                                                args_str = str(event.part.args) if event.part.args else ""
-                                                print(f"\n\033[97;48;5;166m🔧 Tool Plan: {event.part.tool_name}({args_str}\033[0m", end="", flush=True)
-                                                tool_args_printed += len(args_str)
+                                            args_str = str(event.part.args) if event.part.args else ""
+                                            print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}({args_str}", end="", flush=True)
+                                            tool_args_printed += len(args_str)
                                     elif isinstance(event, PartDeltaEvent):
                                         if isinstance(event.delta, TextPartDelta):
                                             print(event.delta.content_delta, end="", flush=True)
@@ -188,14 +187,14 @@ async def main(
                                                     print(chunk, end="", flush=True)
                                                 tool_args_printed += len(chunk)
                                 # End of the stream. Show per-turn token usage with cache & call info
-                                print(f"\n\033[48;5;240m📊 Usage\033[0m [{format_usage_line(stream.usage())}]")
+                                print(f"\n\033[48;5;240m📊 [Usage]\033[0m [{format_usage_line(stream.usage())}]")
 
                         elif Agent.is_call_tools_node(node):
                             # Tools have been called — print a clean summary.
                             for part in node.model_response.parts:
                                 if isinstance(part, ToolCallPart):
                                     args_str = str(part.args)[:200] if part.args else ""
-                                    print(f"\033[97;48;5;166m⚙️[Tool Exec]: {part.tool_name}({args_str})\033[0m")
+                                    print(f"\033[97;48;5;166m⚙️ [Tool Exec] {part.tool_name}({args_str})\033[0m")
                                     if gcs_audit_logger:
                                         await gcs_audit_logger.log("tool_call", {
                                             "tool": part.tool_name,
@@ -207,11 +206,11 @@ async def main(
 
                     result = run.result
                     message_history.extend(result.new_messages())
-                    print(f"\n\033[97;48;5;18m🤖 Agent:\033[0m {result.output}")
+                    print(f"\n\033[97;48;5;18m⚛️ [Agent]\033[0m {result.output}")
 
                     usage = result.usage()
                     total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
-                    print(f"\n\033[48;5;240m📊 Usage Total:\033[0m {format_usage_line(usage)} / {total:,} total")
+                    print(f"\n\033[48;5;240m📊 [Usage] Total\033[0m {format_usage_line(usage)} / {total:,} total")
 
                     if gcs_audit_logger:
                         await gcs_audit_logger.log("agent_response", {
