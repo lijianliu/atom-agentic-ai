@@ -47,6 +47,8 @@ from mcp_helpers import DEFAULT_MCP_URL, build_tcp_mcp_server, check_mcp_reachab
 from gcs_audit_logger import GCSLogger
 from logging_config import setup_logging, get_logger, LOG_FILE_PATH
 
+from usage_helpers import format_usage_line, build_usage_dict
+
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -126,7 +128,7 @@ async def main(
         message_history: list = []
         while True:
             try:
-                prompt = input("\n👤 You: ")
+                prompt = input("\n\033[97;48;5;39m👤 You:\033[0m ")
             except (KeyboardInterrupt, EOFError):
                 print("  (interrupted)")
                 continue
@@ -167,7 +169,7 @@ async def main(
                                             tool_args_printed = 0  # reset for each new tool call
                                             if verbose:
                                                 args_str = str(event.part.args) if event.part.args else ""
-                                                print(f"\n🔧 Tool: {event.part.tool_name}({args_str}", end="", flush=True)
+                                                print(f"\n\033[97;48;5;166m🔧 Tool: {event.part.tool_name}({args_str}\033[0m", end="", flush=True)
                                                 tool_args_printed += len(args_str)
                                     elif isinstance(event, PartDeltaEvent):
                                         if isinstance(event.delta, TextPartDelta):
@@ -184,26 +186,10 @@ async def main(
                                                 else:
                                                     print(chunk, end="", flush=True)
                                                 tool_args_printed += len(chunk)
-                                print()  # newline after each streamed model turn
+                                # End of stream
+                                print("\n################## END OF STREAM ###############")  # newline after each streamed model turn
                                 # Show per-turn token usage with cache & call info
-                                u = stream.usage()
-                                in_t = u.input_tokens or 0
-                                out_t = u.output_tokens or 0
-                                cache_write = getattr(u, 'cache_write_tokens', 0) or 0
-                                cache_read = getattr(u, 'cache_read_tokens', 0) or 0
-                                new_t = in_t - cache_write - cache_read
-                                reqs = getattr(u, 'requests', 0) or 0
-                                tools = getattr(u, 'tool_calls', 0) or 0
-                                cache_hit_pct = (cache_read / in_t * 100) if in_t > 0 else 0
-                                uncached = new_t + cache_write
-                                line = (
-                                    f"{in_t:,} in "
-                                    f"({new_t:,} new · {cache_write:,} cache write · {cache_read:,} cache read)"
-                                    f" [{cache_hit_pct:.0f}% hit · {uncached:,} uncached]"
-                                    f" / {out_t:,} out"
-                                    f" | {reqs} reqs / {tools} tools"
-                                )
-                                print(f"  📊 [{line}]")
+                                print(f"  📊 [{format_usage_line(stream.usage())}]")
 
                         elif Agent.is_call_tools_node(node):
                             # Tools have been called — print a clean summary.
@@ -213,56 +199,29 @@ async def main(
                                     if verbose:
                                         print(f"  ⚙️  [Executing] {part.tool_name}({args_str})")
                                     else:
-                                        print(f"🔧 Tool: {part.tool_name}({args_str})")
+                                        print(f"\033[97;48;5;166m🔧 Tool: {part.tool_name}({args_str})\033[0m")
                                     if gcs_audit_logger:
                                         await gcs_audit_logger.log("tool_call", {
                                             "tool": part.tool_name,
                                             "args_preview": args_str,
                                         })
-
-
                         elif Agent.is_end_node(node):
                             if verbose:
                                 print(f"VERBOSE> ✅ [End] {str(node.data)[:200]}")
 
                     result = run.result
                     message_history.extend(result.new_messages())
-                    print(f"\n🤖 Agent: {result.output}")
+                    print(f"\n\033[97;48;5;18m🤖 Agent:\033[0m {result.output}")
 
                     usage = result.usage()
-                    in_t = usage.input_tokens or 0
-                    out_t = usage.output_tokens or 0
-                    cache_write = getattr(usage, 'cache_write_tokens', 0) or 0
-                    cache_read = getattr(usage, 'cache_read_tokens', 0) or 0
-                    new_t = in_t - cache_write - cache_read
-                    reqs = getattr(usage, 'requests', 0) or 0
-                    tools = getattr(usage, 'tool_calls', 0) or 0
-                    cache_hit_pct = (cache_read / in_t * 100) if in_t > 0 else 0
-                    uncached = new_t + cache_write
-                    total_line = (
-                        f"{in_t:,} in "
-                        f"({new_t:,} new · {cache_write:,} cache write · {cache_read:,} cache read)"
-                        f" [{cache_hit_pct:.0f}% hit · {uncached:,} uncached]"
-                        f" / {out_t:,} out"
-                        f" / {in_t + out_t:,} total"
-                        f" | {reqs} reqs / {tools} tools"
-                    )
-                    print(f"\n📊 Total: {total_line}")
+                    total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
+                    print(f"\n📊 Total: {format_usage_line(usage)} / {total:,} total")
 
                     if gcs_audit_logger:
                         await gcs_audit_logger.log("agent_response", {
                             "response": result.output,
                         })
-                        await gcs_audit_logger.log("token_usage", {
-                            "input_tokens": in_t,
-                            "output_tokens": out_t,
-                            "cache_write_tokens": cache_write,
-                            "cache_read_tokens": cache_read,
-                            "new_tokens": new_t,
-                            "requests": reqs,
-                            "tool_calls": tools,
-                            "cache_hit_pct": round(cache_hit_pct, 1),
-                        })
+                        await gcs_audit_logger.log("token_usage", build_usage_dict(usage))
 
             task = asyncio.ensure_future(_run())
 
