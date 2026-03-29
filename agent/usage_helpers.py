@@ -40,3 +40,42 @@ def build_usage_dict(usage) -> dict:
         "tool_calls": getattr(usage, 'tool_calls', 0) or 0,
         "cache_hit_pct": round((cache_read / in_t * 100) if in_t > 0 else 0, 1),
     }
+
+
+def new_session_usage() -> dict:
+    """Create a fresh session-level usage accumulator."""
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+        "requests": 0,
+        "tool_calls": 0,
+        "turns": 0,
+    }
+
+
+def accumulate_session_usage(session: dict, usage) -> None:
+    """Add a single run's usage into the session accumulator."""
+    session["input_tokens"] += usage.input_tokens or 0
+    session["output_tokens"] += usage.output_tokens or 0
+    session["cache_write_tokens"] += getattr(usage, 'cache_write_tokens', 0) or 0
+    session["cache_read_tokens"] += getattr(usage, 'cache_read_tokens', 0) or 0
+    session["requests"] += getattr(usage, 'requests', 0) or 0
+    session["tool_calls"] += getattr(usage, 'tool_calls', 0) or 0
+    session["turns"] += 1
+
+
+def format_session_usage(session: dict) -> str:
+    """Format session accumulator into a human-readable string."""
+    inp = session["input_tokens"]
+    out = session["output_tokens"]
+    cache_read = session["cache_read_tokens"]
+    cache_write = session["cache_write_tokens"]
+    total = inp + out
+    turns = session["turns"]
+    cache_hit_pct = (cache_read / inp * 100) if inp > 0 else 0
+    return (
+        f"{inp:,} in ({cache_read:,} cache read \u00b7 {cache_write:,} cache write "
+        f"\u00b7 {cache_hit_pct:.0f}% hit) / {out:,} out / {total:,} total ({turns} turns)"
+    )
