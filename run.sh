@@ -12,6 +12,8 @@
 #   ./run.sh --verbose           # Verbose mode
 #   ./run.sh --skip-update       # Skip uv sync
 #   ./run.sh --no-sandbox        # Skip sandbox auto-start
+#   ./run.sh --slackbot           # Run as Slack bot connector
+#   ./run.sh --slackbot -v        # Slack bot with verbose logging
 # =============================================================================
 set -euo pipefail
 
@@ -24,12 +26,14 @@ SKIP_UPDATE=false
 VERBOSE=false
 USE_OPENAI=false
 NO_SANDBOX=false
+SLACKBOT=false
 for arg in "$@"; do
   case "$arg" in
     --skip-update|-s) SKIP_UPDATE=true ;;
     --verbose|-v)     VERBOSE=true ;;
     --openai)         USE_OPENAI=true ;;
     --no-sandbox)     NO_SANDBOX=true ;;
+    --slackbot)       SLACKBOT=true ;;
   esac
 done
 
@@ -92,12 +96,21 @@ else
   echo "⚠️  Sandbox auto-start disabled (--no-sandbox)"
 fi
 
-# ---- Build flags for agent ----
-AGENT_FLAGS="--mcp-url ${MCP_URL}"
-[ "$VERBOSE" = true ]    && AGENT_FLAGS="$AGENT_FLAGS --verbose"
-[ "$USE_OPENAI" = true ] && AGENT_FLAGS="$AGENT_FLAGS --openai"
+# ---- Build common flags ----
+COMMON_FLAGS=""
+[ "$VERBOSE" = true ]    && COMMON_FLAGS="$COMMON_FLAGS --verbose"
+[ "$USE_OPENAI" = true ] && COMMON_FLAGS="$COMMON_FLAGS --openai"
 
-# ---- Run AtomAI (MCP mode) ----
-echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
-echo "   MCP URL: ${MCP_URL}"
-.venv/bin/python agent/agent.py $AGENT_FLAGS
+if [ "$SLACKBOT" = true ]; then
+  # ---- Run Slack bot connector ----
+  SLACKBOT_FLAGS="--mcp-url ${MCP_URL}${COMMON_FLAGS}"
+  echo "🤖 Starting Slack Bot Connector..."
+  echo "   MCP URL: ${MCP_URL}"
+  .venv/bin/python -m connectors.slackbot $SLACKBOT_FLAGS
+else
+  # ---- Run AtomAI interactive REPL ----
+  AGENT_FLAGS="--mcp-url ${MCP_URL}${COMMON_FLAGS}"
+  echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
+  echo "   MCP URL: ${MCP_URL}"
+  .venv/bin/python agent/agent.py $AGENT_FLAGS
+fi
