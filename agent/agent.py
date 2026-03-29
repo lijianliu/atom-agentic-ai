@@ -113,6 +113,7 @@ async def main(
     if gcs_audit_logger:
         logger.info("GCS logging enabled → %s", gcs_audit_logger.gcs_uri)
         print(f"   📝 GCS: {gcs_audit_logger.gcs_uri}")
+        await gcs_audit_logger.warm_token()
         await gcs_audit_logger.log("session_start", {
             "mcp_url": mcp_url,
             "model": "openai" if use_openai else "anthropic",
@@ -158,18 +159,18 @@ async def main(
                                         # A new response part is beginning;
                                         # the part may already carry initial content.
                                         if isinstance(event.part, ThinkingPart):
-                                            print("\n💭 Thinking: ", end="", flush=True)
+                                            print("\n\033[48;5;17m💭 Thinking:\033[0m ", end="", flush=True)
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, TextPart):
-                                            print("\n💬 ", end="", flush=True)
+                                            print("\n\033[48;5;22m💬 Text\033[0m ", end="", flush=True)
                                             if event.part.content:
                                                 print(event.part.content, end="", flush=True)
                                         elif isinstance(event.part, ToolCallPart):
                                             tool_args_printed = 0  # reset for each new tool call
                                             if verbose:
                                                 args_str = str(event.part.args) if event.part.args else ""
-                                                print(f"\n\033[97;48;5;166m🔧 Tool: {event.part.tool_name}({args_str}\033[0m", end="", flush=True)
+                                                print(f"\n\033[97;48;5;166m🔧 Tool Plan: {event.part.tool_name}({args_str}\033[0m", end="", flush=True)
                                                 tool_args_printed += len(args_str)
                                     elif isinstance(event, PartDeltaEvent):
                                         if isinstance(event.delta, TextPartDelta):
@@ -186,20 +187,15 @@ async def main(
                                                 else:
                                                     print(chunk, end="", flush=True)
                                                 tool_args_printed += len(chunk)
-                                # End of stream
-                                print("\n################## END OF STREAM ###############")  # newline after each streamed model turn
-                                # Show per-turn token usage with cache & call info
-                                print(f"  📊 [{format_usage_line(stream.usage())}]")
+                                # End of the stream. Show per-turn token usage with cache & call info
+                                print(f"\n\033[48;5;240m📊 Usage\033[0m [{format_usage_line(stream.usage())}]")
 
                         elif Agent.is_call_tools_node(node):
                             # Tools have been called — print a clean summary.
                             for part in node.model_response.parts:
                                 if isinstance(part, ToolCallPart):
                                     args_str = str(part.args)[:200] if part.args else ""
-                                    if verbose:
-                                        print(f"  ⚙️  [Executing] {part.tool_name}({args_str})")
-                                    else:
-                                        print(f"\033[97;48;5;166m🔧 Tool: {part.tool_name}({args_str})\033[0m")
+                                    print(f"\033[97;48;5;166m⚙️[Tool Exec]: {part.tool_name}({args_str})\033[0m")
                                     if gcs_audit_logger:
                                         await gcs_audit_logger.log("tool_call", {
                                             "tool": part.tool_name,
@@ -207,7 +203,7 @@ async def main(
                                         })
                         elif Agent.is_end_node(node):
                             if verbose:
-                                print(f"VERBOSE> ✅ [End] {str(node.data)[:200]}")
+                                print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:200]}")
 
                     result = run.result
                     message_history.extend(result.new_messages())
@@ -215,7 +211,7 @@ async def main(
 
                     usage = result.usage()
                     total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
-                    print(f"\n📊 Total: {format_usage_line(usage)} / {total:,} total")
+                    print(f"\n\033[48;5;240m📊 Usage Total:\033[0m {format_usage_line(usage)} / {total:,} total")
 
                     if gcs_audit_logger:
                         await gcs_audit_logger.log("agent_response", {
@@ -239,7 +235,7 @@ async def main(
                 loop.remove_signal_handler(signal.SIGINT)
 
             if cancelled:
-                print("\n⚠️  Cancelled.")
+                print("\n\033[41m⚠️  Cancelled.\033[0m")
 
     if gcs_audit_logger:
         print(f"\n📝 Flushing session log to {gcs_audit_logger.gcs_uri} ...")

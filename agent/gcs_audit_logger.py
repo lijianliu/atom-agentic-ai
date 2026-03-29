@@ -172,6 +172,21 @@ class GCSLogger:
         if self._pending_count >= AUTO_FLUSH_EVERY:
             await self._safe_flush()
 
+    async def warm_token(self) -> None:
+        """Pre-fetch the gcloud access token in a background thread.
+
+        Call this at session start so the exit flush doesn't pay the
+        ~1-2 s subprocess cost of ``gcloud auth print-access-token``.
+        """
+        if not _GCS_AVAILABLE:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _gcs_client_factory.get_client)
+            logger.debug("GCS token pre-warmed")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GCSLogger: token pre-warm failed: %s", exc)
+
     async def flush(self) -> None:
         """Manually flush the current buffer to GCS."""
         await self._safe_flush()
