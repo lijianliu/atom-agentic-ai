@@ -191,12 +191,15 @@ class GCSLogger:
         """Manually flush the current buffer to GCS."""
         await self._safe_flush()
 
-    async def close(self) -> None:
+    async def close(self, extra: dict[str, Any] | None = None) -> None:
         """Log a ``session_end`` event, cancel the bg task, flush, and seal."""
         if self._closed:
             return
         self._stop_bg_task()
-        await self.log("session_end", {"started_at": self._started_at})
+        data: dict[str, Any] = {"started_at": self._started_at}
+        if extra:
+            data.update(extra)
+        await self.log("session_end", data)
         await self._safe_flush()
         self._closed = True
 

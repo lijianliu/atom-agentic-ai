@@ -393,8 +393,8 @@ async def main(
     print(f"\n\033[48;5;24m📊 [Session Total]\033[0m {format_session_usage(session_usage)}")
 
     if gcs_audit_logger:
-        await gcs_audit_logger.log("session_end", session_usage)
         print(f"\n📝 Flushing session log to {gcs_audit_logger.gcs_uri} ...")
+        await gcs_audit_logger.close(extra=session_usage)
         await gcs_audit_logger.close()
         logger.info("Session log flushed → %s", gcs_audit_logger.gcs_uri)
         print("   ✅ Done.")

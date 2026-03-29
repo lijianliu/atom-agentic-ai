@@ -47,6 +47,7 @@ def new_session_usage() -> dict:
     return {
         "input_tokens": 0,
         "output_tokens": 0,
+        "total_tokens": 0,
         "cache_write_tokens": 0,
         "cache_read_tokens": 0,
         "requests": 0,
@@ -64,6 +65,7 @@ def accumulate_session_usage(session: dict, usage) -> None:
     session["requests"] += getattr(usage, 'requests', 0) or 0
     session["tool_calls"] += getattr(usage, 'tool_calls', 0) or 0
     session["turns"] += 1
+    session["total_tokens"] = session["input_tokens"] + session["output_tokens"]
 
 
 def format_session_usage(session: dict) -> str:
