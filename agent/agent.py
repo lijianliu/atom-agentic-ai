@@ -192,12 +192,9 @@ async def main(
     if gcs_audit_logger:
         logger.info("GCS logging enabled → %s", gcs_audit_logger.gcs_uri)
         print(f"   📝 GCS: {gcs_audit_logger.gcs_uri}")
+        print(f"   👤 User: {gcs_audit_logger.username}")
+        print(f"   🆔 Session: {gcs_audit_logger.session_id}")
         await gcs_audit_logger.warm_token()
-        await gcs_audit_logger.log("session_start", {
-            "mcp_url": mcp_url,
-            "model": "openai" if use_openai else "anthropic",
-            "verbose": verbose,
-        })
     else:
         logger.info("GCS logging disabled (ATOM_AUDIT_LOG_GCS_PATH not set)")
         print("   📝 GCS logging disabled (set ATOM_AUDIT_LOG_GCS_PATH to enable)")
@@ -220,6 +217,7 @@ async def main(
                 continue
 
             if gcs_audit_logger:
+                gcs_audit_logger.start_turn(prompt)
                 await gcs_audit_logger.log("user_prompt", {"prompt": prompt})
 
             print("⏳ Thinking... (Ctrl+C to cancel)")
@@ -389,15 +387,21 @@ async def main(
             if cancelled:
                 print("\n\033[41m⚠️  Cancelled.\033[0m")
 
+            # ── Flush turn to GCS after every prompt is processed ──
+            if gcs_audit_logger:
+                gcs_uri = await gcs_audit_logger.flush_turn()
+                if gcs_uri:
+                    print(f"\033[48;5;240m📝 [Logged]\033[0m {gcs_uri}")
+
     # ── Session summary ──
     print(f"\n\033[48;5;24m📊 [Session Total]\033[0m {format_session_usage(session_usage)}")
 
     if gcs_audit_logger:
-        print(f"\n📝 Flushing session log to {gcs_audit_logger.gcs_uri} ...")
-        await gcs_audit_logger.close(extra=session_usage)
-        await gcs_audit_logger.close()
-        logger.info("Session log flushed → %s", gcs_audit_logger.gcs_uri)
-        print("   ✅ Done.")
+        print(f"\n📝 Flushing session-end log to GCS ...")
+        exit_uri = await gcs_audit_logger.close(extra=session_usage)
+        if exit_uri:
+            print(f"   ✅ {exit_uri}")
+        logger.info("Session log flushed")
 
 
 # ---------------------------------------------------------------------------

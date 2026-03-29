@@ -1,16 +1,26 @@
 """
 gcs_audit_logger.py — Async-friendly GCS activity logger for Atom Agent sessions.
 =============================================================================
-Buffers events in-memory as JSONL records; each flush overwrites the blob
-with the full accumulated content (simple + race-condition-free).
+Buffers events in-memory as JSONL records per turn.  Each turn is flushed
+to its own GCS blob when ``flush_turn()`` is called.
 
-GCS blob path:  {prefix}/{YYYY-MM-DD}/{session_id}.jsonl
+GCS blob path:
+    {prefix}/{date}/{username}-{time}/{username}_{session_ts}-{turn}-{prompt_slug}.jsonl
+
+    Example:
+    logs/2026-03-29/jdoe-19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
+
+Session ID = ``{username}-{session_ts}`` (stable for the whole ``./run.sh``
+lifetime — no UUID needed).
 
 Usage:
-    logger = GCSLogger.from_env()   # reads ATOM_AUDIT_LOG_GCS_PATH env var
+    logger = GCSLogger.from_env()
     if logger:
-        await logger.log("user_prompt", {"prompt": "..."})
-        await logger.close()        # flush + write session_end event
+        logger.start_turn("tell me about cats")      # begin turn 1
+        await logger.log("user_prompt", {...})
+        await logger.log("tool_call", {...})
+        await logger.flush_turn()                    # write turn 1 blob
+        await logger.close()                         # session_end + final flush
 
 All public methods are fire-and-forget: exceptions are caught and printed
 as warnings — they NEVER propagate to the caller.
@@ -18,12 +28,13 @@ as warnings — they NEVER propagate to the caller.
 from __future__ import annotations
 
 import asyncio
+import getpass
 import json
 import os
+import re
 import subprocess
 import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any
@@ -44,11 +55,9 @@ except ImportError:  # pragma: no cover
 # Constants
 # ---------------------------------------------------------------------------
 
-AUTO_FLUSH_EVERY = 50        # flush after this many pending events (safety valve)
-IDLE_FLUSH_AFTER = 60.0      # seconds of inactivity before background flush
-IDLE_CHECK_INTERVAL = 10.0   # how often the background task polls (seconds)
 TOKEN_TTL_SECONDS = 25 * 60   # re-fetch gcloud token after 25 minutes
 ENV_PATH = "ATOM_AUDIT_LOG_GCS_PATH"
+PROMPT_SLUG_MAX = 50          # max chars in the prompt portion of the filename
 
 
 # ---------------------------------------------------------------------------
@@ -60,45 +69,100 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _session_timestamp() -> str:
+    """UTC timestamp for session IDs / filenames.
+
+    Format: ``2026-03-29T19-14-11.422Z``
+
+    Colons are replaced with hyphens (filesystem-safe); everything
+    else uses hyphens for consistency.
+    """
+    now = datetime.now(timezone.utc)
+    base = now.strftime("%Y-%m-%dT%H-%M-%S")
+    millis = f"{now.microsecond // 1000:03d}"
+    return f"{base}.{millis}Z"
+
+
+def _resolve_username() -> str:
+    """Best-effort username from the running environment.
+
+    Resolution order:
+      1. ``USER`` env var  (Unix/macOS)
+      2. ``LOGNAME`` env var  (Unix/macOS)
+      3. ``USERNAME`` env var  (Windows)
+      4. ``getpass.getuser()`` fallback
+      5. ``"unknown"``
+    """
+    for var in ("USER", "LOGNAME", "USERNAME"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _slugify_prompt(text: str, max_len: int = PROMPT_SLUG_MAX) -> str:
+    """Turn a user prompt into a filename-safe slug.
+
+    Rules:
+      • Keep only ``[a-zA-Z0-9]``.
+      • Every other character (space, punctuation, unicode) → ``_``.
+      • Collapse consecutive ``_`` into one.
+      • Strip leading/trailing ``_``.
+      • Truncate to *max_len* characters.
+      • If nothing survives, return ``"prompt"``.
+    """
+    slug = re.sub(r"[^a-zA-Z0-9]", "_", text)
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    slug = slug[:max_len].rstrip("_")
+    return slug or "prompt"
+
+
 # ---------------------------------------------------------------------------
 # GCSLogger
 # ---------------------------------------------------------------------------
 
 class GCSLogger:
-    """Non-blocking, JSONL-based GCS activity logger.
+    """Non-blocking, per-turn JSONL GCS activity logger.
+
+    Each user prompt → agent response cycle ("turn") accumulates events
+    in an in-memory buffer.  When ``flush_turn()`` is called the buffer
+    is written to a uniquely-named GCS blob and then cleared for the
+    next turn.
 
     Parameters
     ----------
     bucket_name:
         GCS bucket name (without ``gs://`` prefix).
-    session_id:
-        Unique session identifier.  Auto-generated UUID4 if not provided.
     prefix:
-        Path prefix inside the bucket (default: ``logs``).
-
-    Background flush
-    ----------------
-    A background asyncio task is started on the first ``log()`` call.
-    It polls every ``IDLE_CHECK_INTERVAL`` seconds and flushes to GCS
-    whenever ``IDLE_FLUSH_AFTER`` seconds have passed since the last
-    ``log()`` call and there are un-flushed events pending.
+        Path prefix inside the bucket (default: ``""``).
+    username:
+        Username for the blob path.  Auto-resolved from env if not given.
     """
 
     def __init__(
         self,
         bucket_name: str,
-        session_id: str | None = None,
         prefix: str = "",
+        username: str | None = None,
     ) -> None:
         self.bucket_name = bucket_name
-        self.session_id: str = session_id or str(uuid.uuid4())
         self.prefix = prefix.rstrip("/")
+        self.username: str = username or _resolve_username()
+
+        # Session ID = "{username}-{ts}" — stable for the entire run.sh session
+        self._session_ts: str = _session_timestamp()
+        self.session_id: str = f"{self.username}-{self._session_ts}"
+
         self._started_at: str = _utcnow()
-        self._all_lines: list[str] = []          # entire accumulated content
-        self._pending_count: int = 0              # lines not yet written to GCS
-        self._last_updated_at: float | None = None  # monotonic time of last log()
-        self._bg_task: asyncio.Task | None = None   # idle-flush background task
         self._closed: bool = False
+
+        # Per-turn state
+        self._turn: int = 0                      # current turn number (1-based after start_turn)
+        self._turn_slug: str = ""                 # slugified prompt for the filename
+        self._turn_lines: list[str] = []          # JSONL lines for the current turn
 
         if not _GCS_AVAILABLE:
             logger.warning(
@@ -111,10 +175,7 @@ class GCSLogger:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_env(
-        cls,
-        session_id: str | None = None,
-    ) -> "GCSLogger | None":
+    def from_env(cls) -> "GCSLogger | None":
         """Create a logger from environment variables.
 
         Returns ``None`` (silently) when ``ATOM_AUDIT_LOG_GCS_PATH`` is not set,
@@ -144,33 +205,73 @@ class GCSLogger:
         bucket_name = segments[0]
         prefix = segments[1] if len(segments) > 1 else ""
 
-        return GCSLogger(bucket_name=bucket_name, session_id=session_id, prefix=prefix)
+        return cls(bucket_name=bucket_name, prefix=prefix)
 
     # ------------------------------------------------------------------
     # Public API  (all fire-and-forget — never raise)
     # ------------------------------------------------------------------
 
-    async def log(self, event: str, data: dict[str, Any]) -> None:
-        """Append a structured event to the in-memory buffer.
+    def start_turn(self, prompt: str = "") -> None:
+        """Begin a new turn.  Clears the buffer and captures a prompt slug.
 
-        Auto-flushes to GCS every ``AUTO_FLUSH_EVERY`` pending events.
-        Starts the background idle-flush task on the first call.
+        Parameters
+        ----------
+        prompt:
+            The raw user prompt.  Slugified to ``[a-zA-Z0-9_]`` (max 50
+            chars) for use in the GCS blob filename.
         """
+        self._turn += 1
+        self._turn_slug = _slugify_prompt(prompt)
+        self._turn_lines = []
+        logger.debug(
+            "GCS turn %d started (slug=%s)", self._turn, self._turn_slug,
+        )
+
+    async def log(self, event: str, data: dict[str, Any]) -> None:
+        """Append a structured event to the current turn's buffer."""
         if not _GCS_AVAILABLE or self._closed:
             return
         record: dict[str, Any] = {
             "ts": _utcnow(),
             "session_id": self.session_id,
+            "username": self.username,
+            "turn": self._turn,
             "event": event,
         }
         record.update(data)
-        self._all_lines.append(json.dumps(record, ensure_ascii=False))
-        self._pending_count += 1
-        self._last_updated_at = time.monotonic()  # stamp activity time
-        self._ensure_bg_task()                    # no-op after first call
+        self._turn_lines.append(json.dumps(record, ensure_ascii=False))
 
-        if self._pending_count >= AUTO_FLUSH_EVERY:
-            await self._safe_flush()
+    async def flush_turn(self) -> str | None:
+        """Write the current turn's buffered events to a GCS blob.
+
+        The blob path includes username, session timestamp, turn number,
+        and a prompt slug so every turn lands in its own human-readable
+        file.  After a successful write the buffer is cleared.
+
+        Returns the full ``gs://`` URI on success, or ``None`` on skip/failure.
+        """
+        if not _GCS_AVAILABLE or not self._turn_lines:
+            return None
+        blob_path = self._blob_path_for_turn(self._turn, self._turn_slug)
+        gcs_uri = f"gs://{self.bucket_name}/{blob_path}"
+        snapshot = self._turn_lines[:]
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, partial(self._write_blob, blob_path, snapshot),
+            )
+            logger.info(
+                "GCS turn %d flushed → %s (%d events)",
+                self._turn, gcs_uri, len(snapshot),
+            )
+            self._turn_lines = []
+            return gcs_uri
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "GCSLogger: flush turn %d to %s failed",
+                self._turn, gcs_uri, exc_info=exc,
+            )
+            return None
 
     async def warm_token(self) -> None:
         """Pre-fetch the gcloud access token in a background thread.
@@ -187,96 +288,83 @@ class GCSLogger:
         except Exception as exc:  # noqa: BLE001
             logger.warning("GCSLogger: token pre-warm failed: %s", exc)
 
-    async def flush(self) -> None:
-        """Manually flush the current buffer to GCS."""
-        await self._safe_flush()
+    async def close(self, extra: dict[str, Any] | None = None) -> str | None:
+        """Write a ``999-EXIT`` sentinel blob with session usage, then seal.
 
-    async def close(self, extra: dict[str, Any] | None = None) -> None:
-        """Log a ``session_end`` event, cancel the bg task, flush, and seal."""
+        Returns the ``gs://`` URI of the sentinel blob, or ``None``.
+        """
         if self._closed:
-            return
-        self._stop_bg_task()
+            return None
+        self._turn_lines = []  # fresh buffer for the sentinel
         data: dict[str, Any] = {"started_at": self._started_at}
         if extra:
             data.update(extra)
         await self.log("session_end", data)
-        await self._safe_flush()
+
+        # Write as turn 999 with slug "EXIT"
+        blob_path = self._blob_path_for_turn(999, "EXIT")
+        snapshot = self._turn_lines[:]
         self._closed = True
+        if not _GCS_AVAILABLE or not snapshot:
+            return None
+        gcs_uri = f"gs://{self.bucket_name}/{blob_path}"
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, partial(self._write_blob, blob_path, snapshot),
+            )
+            logger.info("GCS session-end flushed → %s", gcs_uri)
+            self._turn_lines = []
+            return gcs_uri
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "GCSLogger: session-end flush to %s failed",
+                gcs_uri, exc_info=exc,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
 
     @property
-    def blob_path(self) -> str:
-        """GCS object path (without bucket), e.g. ``logs/2026-03-27/<uuid>.jsonl``."""
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return f"{self.prefix}/{date}/{self.session_id}.jsonl"
-
-    @property
     def gcs_uri(self) -> str:
-        """Full GCS URI, e.g. ``gs://my-bucket/logs/2026-03-27/<uuid>.jsonl``."""
-        return f"gs://{self.bucket_name}/{self.blob_path}"
-
+        """Representative GCS URI (uses current turn info)."""
+        slug = self._turn_slug or "prompt"
+        blob = self._blob_path_for_turn(self._turn or 1, slug)
+        return f"gs://{self.bucket_name}/{blob}"
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ensure_bg_task(self) -> None:
-        """Spin up the idle-flush background task exactly once."""
-        if self._bg_task is None or self._bg_task.done():
-            self._bg_task = asyncio.create_task(
-                self._bg_flush_loop(),
-                name=f"gcs-idle-flush-{self.session_id[:8]}",
-            )
+    def _blob_path_for_turn(self, turn: int, slug: str) -> str:
+        """Build the blob path for a specific turn.
 
-    def _stop_bg_task(self) -> None:
-        """Cancel the background task (best-effort, never raises)."""
-        if self._bg_task and not self._bg_task.done():
-            self._bg_task.cancel()
+        Format:
+            {prefix}/{date}/{username}-{time}/{username}_{session_ts}-{turn}-{slug}.jsonl
 
-    async def _bg_flush_loop(self) -> None:
-        """Background coroutine: flush when idle for ``IDLE_FLUSH_AFTER`` seconds.
-
-        Polls every ``IDLE_CHECK_INTERVAL`` seconds.  Exits cleanly when
-        cancelled (i.e. on ``close()``) or when the logger is sealed.
+        Example:
+            logs/2026-03-29/jdoe-19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
         """
-        try:
-            while not self._closed:
-                await asyncio.sleep(IDLE_CHECK_INTERVAL)
-                if self._closed or not self._pending_count:
-                    continue
-                if self._last_updated_at is None:
-                    continue
-                idle_secs = time.monotonic() - self._last_updated_at
-                if idle_secs >= IDLE_FLUSH_AFTER:
-                    await self._safe_flush()
-        except asyncio.CancelledError:
-            pass  # normal shutdown path
+        # session_ts = "2026-03-29T19-14-11.422Z"
+        date_part, time_part = self._session_ts.split("T", 1)
+        date_folder = date_part                             # 2026-03-29
+        session_folder = f"{self.username}-{time_part}"     # jdoe-19-14-11.422Z
 
-    async def _safe_flush(self) -> None:
-        """Write all accumulated lines to GCS (overwrites), swallowing exceptions."""
-        if not _GCS_AVAILABLE or not self._pending_count:
-            return
-        snapshot = self._all_lines[:]  # immutable snapshot for the thread
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, partial(self._write_blob, snapshot))
-            self._pending_count = 0
-        except Exception as exc:  # noqa: BLE001
-            logger.error("GCSLogger: flush to %s failed", self.gcs_uri, exc_info=exc)
-            # Don't clear _pending_count — we'll retry on the next flush.
+        filename = (
+            f"{self.username}-{self._session_ts}-{turn:03d}-{slug}.jsonl"
+        )
+        parts = [date_folder, session_folder, filename]
+        if self.prefix:
+            parts.insert(0, self.prefix)
+        return "/".join(parts)
 
-    def _write_blob(self, lines: list[str]) -> None:
-        """Sync GCS upload — runs inside a thread-pool executor.
-
-        Each call overwrites the blob with the *complete* session content
-        so far — no GCS-level append needed, no race conditions.
-        """
+    def _write_blob(self, blob_path: str, lines: list[str]) -> None:
+        """Sync GCS upload — runs inside a thread-pool executor."""
         client = _gcs_client_factory.get_client()
         bucket = client.bucket(self.bucket_name)
-        blob = bucket.blob(self.blob_path)
+        blob = bucket.blob(blob_path)
         content = "\n".join(lines) + "\n"
         blob.upload_from_string(content, content_type="application/jsonl")
 
