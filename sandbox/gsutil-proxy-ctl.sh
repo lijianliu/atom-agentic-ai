@@ -28,15 +28,20 @@ case "${1:-}" in
         touch "${LOG_FILE}"
         nohup python3 "${PROXY_SCRIPT}" >> "${LOG_FILE}" 2>&1 &
         echo $! > "${PID_FILE}"
-        sleep 1
-        if [ -S "${SOCKET_PATH}" ]; then
-            echo "✅ Proxy started (PID $(cat "${PID_FILE}"))"
-            echo "   Socket: ${SOCKET_PATH}"
-            echo "   Log:    ${LOG_FILE}"
-        else
-            echo "❌ Failed to start. Check ${LOG_FILE}"
-            exit 1
-        fi
+        # Wait up to 10s for the socket to appear (race condition fix)
+        for i in $(seq 1 20); do
+            if [ -S "${SOCKET_PATH}" ]; then
+                echo "✅ Proxy started (PID $(cat "${PID_FILE}"))"
+                echo "   Socket: ${SOCKET_PATH}"
+                echo "   Log:    ${LOG_FILE}"
+                break
+            fi
+            if [ "$i" -eq 20 ]; then
+                echo "❌ Failed to start after 5s. Check ${LOG_FILE}"
+                exit 1
+            fi
+            sleep 0.5
+        done
         ;;
     stop)
         if [ -f "${PID_FILE}" ]; then

@@ -7,7 +7,8 @@
 #   2. Starts the agent that connects to the MCP server
 #
 # Usage:
-#   ./run.sh                     # Default (LLM Gateway)
+#   ./run.sh                     # New auto-named session
+#   ./run.sh --session s.json    # Resume a specific session
 #   ./run.sh --openai            # Use OpenAI
 #   ./run.sh --verbose           # Verbose mode
 #   ./run.sh --skip-update       # Skip uv sync
@@ -27,13 +28,16 @@ VERBOSE=false
 USE_OPENAI=false
 NO_SANDBOX=false
 SLACKBOT=false
-for arg in "$@"; do
-  case "$arg" in
-    --skip-update|-s) SKIP_UPDATE=true ;;
-    --verbose|-v)     VERBOSE=true ;;
-    --openai)         USE_OPENAI=true ;;
-    --no-sandbox)     NO_SANDBOX=true ;;
-    --slackbot)       SLACKBOT=true ;;
+SESSION_FILE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-update|-s) SKIP_UPDATE=true; shift ;;
+    --verbose|-v)     VERBOSE=true; shift ;;
+    --openai)         USE_OPENAI=true; shift ;;
+    --no-sandbox)     NO_SANDBOX=true; shift ;;
+    --slackbot)       SLACKBOT=true; shift ;;
+    --session)        SESSION_FILE="${2:-}"; shift 2 ;;
+    *)                shift ;;
   esac
 done
 
@@ -110,7 +114,9 @@ if [ "$SLACKBOT" = true ]; then
 else
   # ---- Run AtomAI interactive REPL ----
   AGENT_FLAGS="--mcp-url ${MCP_URL}${COMMON_FLAGS}"
+  [ -n "$SESSION_FILE" ] && AGENT_FLAGS="$AGENT_FLAGS --session $SESSION_FILE"
   echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
   echo "   MCP URL: ${MCP_URL}"
+  [ -n "$SESSION_FILE" ] && echo "   💾 Session: ${SESSION_FILE}"
   .venv/bin/python agent/agent.py $AGENT_FLAGS
 fi

@@ -42,6 +42,10 @@ llm-logs/
 /tmp/
 *.log
 
+# Agent session files
+*.session.json
+*.session.json.tmp
+
 # Data files with potential PII (never commit these)
 *.csv
 *.xlsx
