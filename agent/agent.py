@@ -42,13 +42,26 @@ logger = get_logger(__name__)
 # Agent factory
 # ---------------------------------------------------------------------------
 
+_SYSTEM_PROMPT_PATH = Path.home() / ".config" / "atom-agentic-ai" / "system_prompt.md"
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful agent. Your tools (execute_command, read_file, "
+    "write_file, append_file, delete_file, list_dir) run inside a hardened "
+    "Docker sandbox with no network access. File paths are relative to "
+    "/workspace inside the sandbox."
+)
+
+
 def get_system_prompt() -> str:
-    return (
-        "You are a helpful agent. Your tools (execute_command, read_file, "
-        "write_file, append_file, delete_file, list_dir) run inside a hardened "
-        "Docker sandbox with no network access. File paths are relative to "
-        "/workspace inside the sandbox."
-    )
+    """Load system prompt from ~/.config/atom-agentic-ai/system_prompt.md if it exists,
+    otherwise fall back to the default."""
+    if _SYSTEM_PROMPT_PATH.is_file():
+        prompt = _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        if prompt:
+            logger.info("Loaded system prompt from %s", _SYSTEM_PROMPT_PATH)
+            return prompt
+        logger.warning("System prompt file is empty, using default: %s", _SYSTEM_PROMPT_PATH)
+    return _DEFAULT_SYSTEM_PROMPT
 
 
 def build_agent(

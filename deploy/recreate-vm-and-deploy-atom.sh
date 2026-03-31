@@ -242,18 +242,29 @@ ssh $SSH_OPTS "${REMOTE_USER}@${INTERNAL_IP}" bash <<REMOTE_UNPACK
 REMOTE_UNPACK
 ok "Codebase copied and unpacked"
 
-# ── Step 8: Copy env config if present ───────────────────────────────────────
+# ── Step 8: Copy config files if present ─────────────────────────────────────
+step "8️⃣" "Copying config files to VM..."
+ssh $SSH_OPTS "${REMOTE_USER}@${INTERNAL_IP}" \
+    "mkdir -p \$HOME/.config/atom-agentic-ai"
+
 LOCAL_ENV="$HOME/.config/atom-agentic-ai/env.sh"
 if [ -f "$LOCAL_ENV" ]; then
-    step "8️⃣" "Copying env config to VM..."
-    ssh $SSH_OPTS "${REMOTE_USER}@${INTERNAL_IP}" \
-        "mkdir -p \$HOME/.config/atom-agentic-ai"
     scp $SSH_OPTS \
         "$LOCAL_ENV" \
         "${REMOTE_USER}@${INTERNAL_IP}:~/.config/atom-agentic-ai/env.sh"
     ok "env.sh copied"
 else
-    warn "No local env config found at ${LOCAL_ENV} — skipping (you may need to create it on the VM)"
+    warn "No local env config found at ${LOCAL_ENV} — skipping"
+fi
+
+LOCAL_PROMPT="$HOME/.config/atom-agentic-ai/system_prompt.md"
+if [ -f "$LOCAL_PROMPT" ]; then
+    scp $SSH_OPTS \
+        "$LOCAL_PROMPT" \
+        "${REMOTE_USER}@${INTERNAL_IP}:~/.config/atom-agentic-ai/system_prompt.md"
+    ok "system_prompt.md copied"
+else
+    warn "No system_prompt.md found at ${LOCAL_PROMPT} — agent will use default prompt"
 fi
 
 # ── Step 9: Install Python deps on VM ──────────────────────────────────────────────────
