@@ -267,6 +267,16 @@ else
     warn "No system_prompt.md found at ${LOCAL_PROMPT} — agent will use default prompt"
 fi
 
+LOCAL_POLICY="$HOME/.config/atom-agentic-ai/gsutil-policy.json"
+if [ -f "$LOCAL_POLICY" ]; then
+    scp $SSH_OPTS \
+        "$LOCAL_POLICY" \
+        "${REMOTE_USER}@${INTERNAL_IP}:~/.config/atom-agentic-ai/gsutil-policy.json"
+    ok "gsutil-policy.json copied"
+else
+    warn "No gsutil-policy.json found at ${LOCAL_POLICY} — proxy will use sandbox default"
+fi
+
 # ── Step 9: Install Python deps on VM ──────────────────────────────────────────────────
 step "9️⃣" "Installing Python dependencies on VM..."
 ssh $SSH_OPTS "${REMOTE_USER}@${INTERNAL_IP}" bash <<REMOTE_DEPS

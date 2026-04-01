@@ -24,9 +24,18 @@ import time
 from pathlib import Path
 
 SOCKET_PATH = "/tmp/gsutil-proxy/gsutil-proxy.sock"
-POLICY_PATH = os.environ.get(
-    "GSUTIL_POLICY", str(Path(__file__).parent / "gsutil-policy.json")
-)
+def _resolve_policy_path() -> str:
+    """Check ~/.config/atom-agentic-ai/gsutil-policy.json first, then fall back to sandbox default."""
+    env_override = os.environ.get("GSUTIL_POLICY")
+    if env_override:
+        return env_override
+    user_policy = Path.home() / ".config" / "atom-agentic-ai" / "gsutil-policy.json"
+    if user_policy.is_file():
+        return str(user_policy)
+    return str(Path(__file__).parent / "gsutil-policy.json")
+
+
+POLICY_PATH = _resolve_policy_path()
 REAL_GSUTIL = "/usr/bin/gsutil"
 MAX_MSG_SIZE = 1024 * 64  # 64KB max message
 COMMAND_TIMEOUT = 120  # seconds
