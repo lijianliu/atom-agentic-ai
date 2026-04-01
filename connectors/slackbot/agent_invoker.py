@@ -63,6 +63,9 @@ class AgentInvoker:
         self.mcp_url = mcp_url
         self._agent: Agent | None = None
         self._agent_entered = False
+        # Per-thread locks to serialise concurrent requests on the same
+        # Slack thread and prevent session file race conditions.
+        self._thread_locks: dict[str, asyncio.Lock] = {}
 
     async def _ensure_agent(self) -> None:
         """Lazily build the agent and enter its async context once."""
@@ -107,6 +110,30 @@ class AgentInvoker:
             dict with keys: response, usage, usage_line, elapsed_s, error
         """
         await self._ensure_agent()
+        assert self._agent is not None
+
+        # Serialise requests per thread to prevent session file races
+        # when multiple messages arrive before the first one finishes.
+        lock_key = thread_ts or "_default"
+        if lock_key not in self._thread_locks:
+            self._thread_locks[lock_key] = asyncio.Lock()
+
+        async with self._thread_locks[lock_key]:
+            return await self._invoke_locked(
+                prompt=prompt,
+                thread_ts=thread_ts,
+                timeout=timeout,
+                on_progress=on_progress,
+            )
+
+    async def _invoke_locked(
+        self,
+        prompt: str,
+        thread_ts: str,
+        timeout: float,
+        on_progress: ProgressCallback | None,
+    ) -> dict[str, Any]:
+        """Inner invoke — called while holding the per-thread lock."""
         assert self._agent is not None
 
         # -- Load or create session --
