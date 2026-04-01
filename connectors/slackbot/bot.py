@@ -146,31 +146,39 @@ class SlackBot:
                 "prompt": prompt,
             })
 
-        # Post a "thinking" indicator
-        loading_ts = self.client.send_message(
+        # Post a "thinking" indicator — this message will show streaming
+        # progress and finally be updated with usage info.
+        progress_ts = self.client.send_message(
             channel_id,
             f"\u23f3 Processing request from {username}...",
             thread_ts=thread_ts,
         )
 
-        # Invoke the agent
+        # Build a progress callback that updates the progress message
+        async def _on_progress(text: str) -> None:
+            if progress_ts:
+                self.client.update_message(channel_id, progress_ts, text)
+
+        # Invoke the agent (with streaming + disk-persisted session)
         result = await self.invoker.invoke(
             prompt=prompt,
             thread_ts=thread_ts,
+            on_progress=_on_progress,
         )
 
         response = result["response"]
         usage = result.get("usage", {})
+        usage_line = result.get("usage_line", "")
         elapsed = result.get("elapsed_s", 0)
         error = result.get("error")
 
-        # Build footer
+        # Build footer and update the progress message with usage info
         status = "\u274c" if error else "\u2705"
         footer = _format_footer(elapsed, usage, status=status)
+        final_progress = f"{footer}\n{usage_line}" if usage_line else footer
 
-        # Update the loading message with the footer
-        if loading_ts:
-            self.client.update_message(channel_id, loading_ts, footer)
+        if progress_ts:
+            self.client.update_message(channel_id, progress_ts, final_progress)
 
         # Send the actual response in thread
         self.client.send_message(channel_id, response, thread_ts=thread_ts)
