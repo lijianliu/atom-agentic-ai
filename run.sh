@@ -13,6 +13,8 @@
 #   ./run.sh --verbose           # Verbose mode
 #   ./run.sh --skip-update       # Skip uv sync
 #   ./run.sh --no-sandbox        # Skip sandbox auto-start
+#   ./run.sh --root               # Root mode: local tools, no sandbox
+#   ./run.sh --system-prompt p.md  # Custom system prompt file
 #   ./run.sh --slackbot           # Run as Slack bot connector
 #   ./run.sh --slackbot -v        # Slack bot with verbose logging
 # =============================================================================
@@ -28,15 +30,19 @@ VERBOSE=false
 USE_OPENAI=false
 NO_SANDBOX=false
 SLACKBOT=false
+ROOT_MODE=false
 SESSION_FILE=""
+SYSTEM_PROMPT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-update|-s) SKIP_UPDATE=true; shift ;;
     --verbose|-v)     VERBOSE=true; shift ;;
     --openai)         USE_OPENAI=true; shift ;;
     --no-sandbox)     NO_SANDBOX=true; shift ;;
+    --root)           ROOT_MODE=true; shift ;;
     --slackbot)       SLACKBOT=true; shift ;;
     --session)        SESSION_FILE="${2:-}"; shift 2 ;;
+    --system-prompt)  SYSTEM_PROMPT="${2:-}"; shift 2 ;;
     *)                shift ;;
   esac
 done
@@ -53,27 +59,30 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-# ---- Create venv if missing ----
-if [ ! -d ".venv" ]; then
+# ---- Create venv if missing (in SCRIPT_DIR, not CWD) ----
+if [ ! -d "${SCRIPT_DIR}/.venv" ]; then
   echo "Creating virtual environment (Python 3.13)..."
-  uv venv --python 3.13
+  (cd "${SCRIPT_DIR}" && uv venv --python 3.13)
   SKIP_UPDATE=false
 fi
 
 if [ "$SKIP_UPDATE" = false ]; then
   echo "Syncing dependencies..."
-  uv sync --all-groups
+  (cd "${SCRIPT_DIR}" && uv sync --all-groups)
 else
   echo "Skipping dependency update (--skip-update)"
 fi
 
-# ---- Always restart gsutil proxy ----
-echo "🔄 Restarting gsutil proxy..."
-"${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" stop 2>/dev/null || true
-"${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" start
+# ---- Root mode: skip all sandbox/proxy setup ----
+if [ "$ROOT_MODE" = true ]; then
+  echo "⚠️  ROOT MODE: Skipping sandbox & proxy, using local tools directly"
+elif [ "$NO_SANDBOX" = false ]; then
+  # ---- Restart gsutil proxy (needed for sandbox GCS access) ----
+  echo "🔄 Restarting gsutil proxy..."
+  "${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" stop 2>/dev/null || true
+  "${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" start
 
-# ---- Start hardened Docker sandbox if not running ----
-if [ "$NO_SANDBOX" = false ]; then
+  # ---- Start hardened Docker sandbox if not running ----
   CONTAINER_NAME="sandbox-mcp"
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
     echo "✅ Hardened sandbox already running (${CONTAINER_NAME})"
@@ -104,19 +113,30 @@ fi
 COMMON_FLAGS=""
 [ "$VERBOSE" = true ]    && COMMON_FLAGS="$COMMON_FLAGS --verbose"
 [ "$USE_OPENAI" = true ] && COMMON_FLAGS="$COMMON_FLAGS --openai"
+[ "$ROOT_MODE" = true ]  && COMMON_FLAGS="$COMMON_FLAGS --root"
+
+# Use the venv from SCRIPT_DIR, but run in user's CWD
+PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 
 if [ "$SLACKBOT" = true ]; then
   # ---- Run Slack bot connector ----
   SLACKBOT_FLAGS="--mcp-url ${MCP_URL}${COMMON_FLAGS}"
   echo "🤖 Starting Slack Bot Connector..."
   echo "   MCP URL: ${MCP_URL}"
-  .venv/bin/python -m connectors.slackbot $SLACKBOT_FLAGS
+  (cd "${SCRIPT_DIR}" && $PYTHON -m connectors.slackbot $SLACKBOT_FLAGS)
 else
   # ---- Run AtomAI interactive REPL ----
-  AGENT_FLAGS="--mcp-url ${MCP_URL}${COMMON_FLAGS}"
+  AGENT_FLAGS="${COMMON_FLAGS}"
+  [ "$ROOT_MODE" = false ] && AGENT_FLAGS="--mcp-url ${MCP_URL}${AGENT_FLAGS}"
   [ -n "$SESSION_FILE" ] && AGENT_FLAGS="$AGENT_FLAGS --session $SESSION_FILE"
-  echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
-  echo "   MCP URL: ${MCP_URL}"
+  [ -n "$SYSTEM_PROMPT" ] && AGENT_FLAGS="$AGENT_FLAGS --system-prompt $SYSTEM_PROMPT"
+  if [ "$ROOT_MODE" = true ]; then
+    echo "🚀 Starting AtomAI (ROOT MODE — local tools)..."
+    echo "   ⚠️  Working directory: $(pwd)"
+  else
+    echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
+    echo "   MCP URL: ${MCP_URL}"
+  fi
   [ -n "$SESSION_FILE" ] && echo "   💾 Session: ${SESSION_FILE}"
-  .venv/bin/python agent/agent.py $AGENT_FLAGS
+  PYTHONPATH="${SCRIPT_DIR}/agent" $PYTHON "${SCRIPT_DIR}/agent/agent.py" $AGENT_FLAGS
 fi

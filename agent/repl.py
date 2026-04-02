@@ -124,15 +124,21 @@ async def run_repl(
     mcp_url: str = "http://127.0.0.1:9100/sse",
     use_openai: bool = False,
     session_file: Path | None = None,
+    root_mode: bool = False,
 ) -> None:
     """Interactive REPL: read user prompts, stream agent responses, persist sessions."""
-    if not await check_mcp_reachable(mcp_url):
+    # Skip MCP check in root mode (we're using local tools)
+    if not root_mode and not await check_mcp_reachable(mcp_url):
         logger.error("Cannot reach MCP server at %s", mcp_url)
         print(f"\u274c Cannot reach MCP server at {mcp_url}")
         print("   Start the sandbox first:  bash sandbox/run-mcp-macos.sh")
         return
 
-    print("\U0001f916 Atom Agent (MCP Sandbox)")
+    if root_mode:
+        print("\U0001f916 Atom Agent (\033[1;33mROOT MODE\033[0m — local tools, no sandbox)")
+        print(f"   \u26a0\ufe0f  Working directory: {Path.cwd()}")
+    else:
+        print("\U0001f916 Atom Agent (MCP Sandbox)")
     print(f"   \U0001f4cb Log: {LOG_FILE_PATH}")
 
     gcs_audit_logger = GCSLogger.from_env()
