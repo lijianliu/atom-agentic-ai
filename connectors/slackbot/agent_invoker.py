@@ -33,8 +33,10 @@ _AGENT_DIR = str(_PROJECT_ROOT / "agent")
 if _AGENT_DIR not in sys.path:
     sys.path.append(_AGENT_DIR)  # append, not insert — project root must win
 
+from logging_config import LOG_DIR
+
 # Session directory for Slack threads
-_SLACK_SESSIONS_DIR = Path.home() / ".config" / "atom-agentic-ai" / "sessions" / "slack"
+_SLACK_SESSIONS_DIR = LOG_DIR / "sessions" / "slack"
 
 # Minimum interval between Slack progress updates (avoid rate-limiting)
 _PROGRESS_UPDATE_INTERVAL_S = 2.0

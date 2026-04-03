@@ -33,6 +33,7 @@ from pydantic_ai.messages import (
 from gcs_audit_logger import GCSLogger
 from logging_config import get_logger, LOG_FILE_PATH
 from session_store import save_session, load_session, default_session_path
+from turn_logger import TurnLogger
 from usage_helpers import (
     format_usage_line,
     build_usage_dict,
@@ -153,6 +154,20 @@ async def run_repl(
         logger.info("GCS logging disabled (ATOM_AUDIT_LOG_GCS_PATH not set)")
         print("   \U0001f4dd GCS logging disabled (set ATOM_AUDIT_LOG_GCS_PATH to enable)")
 
+    # ── Turn-by-Turn logging (uses same session_id as GCS if available) ──
+    if gcs_audit_logger:
+        session_id = gcs_audit_logger.session_id
+    else:
+        import getpass
+        import os
+        from datetime import datetime, timezone
+        username = os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser() or "unknown"
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S.%f")[:-3] + "Z"
+        session_id = f"{username}-{ts}"
+    
+    turn_logger = TurnLogger.create(session_id)
+    print(f"   \U0001f4c1 Turn logs: {turn_logger.session_dir}")
+
     print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
 
     async with agent:
@@ -198,33 +213,87 @@ async def run_repl(
                     usage_limits=UsageLimits(request_limit=500),
                 ) as run:
                     try:
+                        # Pending tool calls waiting for results
+                        pending_tool_calls: list[tuple[str, Any, str]] = []  # [(tool_name, args, call_id), ...]
+                        
                         async for node in run:
                             if Agent.is_model_request_node(node):
+                                # FIRST: Log AND print tool results from previous turn
+                                if pending_tool_calls:
+                                    try:
+                                        all_msgs = run.all_messages()
+                                        for msg in reversed(all_msgs):
+                                            if isinstance(msg, ModelRequest):
+                                                for part in msg.parts:
+                                                    if isinstance(part, ToolReturnPart):
+                                                        for i, (tool_name, args, call_id) in enumerate(pending_tool_calls):
+                                                            if call_id == part.tool_call_id:
+                                                                # Log to file
+                                                                turn_logger.log_tool_exec(
+                                                                    tool_name,
+                                                                    args,
+                                                                    call_id,
+                                                                    result=part.content,
+                                                                )
+                                                                # Print to console
+                                                                args_str = str(args)[:200] if args else ""
+                                                                print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
+                                                                # Log to GCS
+                                                                if gcs_audit_logger:
+                                                                    await gcs_audit_logger.log("tool_call", {
+                                                                        "tool": tool_name,
+                                                                        "args_preview": args_str,
+                                                                    })
+                                                                pending_tool_calls.pop(i)
+                                                                break
+                                                break  # Only check most recent ModelRequest
+                                    except Exception:
+                                        pass
+                                
+                                # NOW start a new turn
+                                turn_logger.start_turn()
+                                
                                 # --- Stream the model's response token-by-token ---
                                 tool_args_printed = 0       # chars of tool args emitted
                                 TOOL_ARGS_CAP = 200         # max chars before "…"
+                                # Per-stream accumulators for turn logging
+                                stream_thinking = []
+                                stream_text = []
+                                stream_tool_calls: dict[int, dict] = {}  # part_index -> {tool, args, call_id}
+                                current_part_index = -1
+                                
                                 async with node.stream(run.ctx) as stream:
                                     async for event in stream:
                                         if isinstance(event, PartStartEvent):
+                                            current_part_index = event.index
                                             if isinstance(event.part, ThinkingPart):
                                                 print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
                                                 if event.part.content:
                                                     print(event.part.content, end="", flush=True)
+                                                    stream_thinking.append(event.part.content)
                                             elif isinstance(event.part, TextPart):
                                                 print("\n\033[48;5;22m💬 [Text]\033[0m ", end="", flush=True)
                                                 if event.part.content:
                                                     print(event.part.content, end="", flush=True)
+                                                    stream_text.append(event.part.content)
                                             elif isinstance(event.part, ToolCallPart):
                                                 tool_args_printed = 0
                                                 args_str = str(event.part.args) if event.part.args else ""
                                                 print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}({args_str}", end="", flush=True)
                                                 tool_args_printed += len(args_str)
+                                                stream_tool_calls[current_part_index] = {
+                                                    "tool": event.part.tool_name,
+                                                    "args": args_str,
+                                                    "call_id": getattr(event.part, "tool_call_id", None),
+                                                }
                                         elif isinstance(event, PartDeltaEvent):
                                             if isinstance(event.delta, TextPartDelta):
                                                 print(event.delta.content_delta, end="", flush=True)
+                                                stream_text.append(event.delta.content_delta)
                                             elif isinstance(event.delta, ThinkingPartDelta):
                                                 if verbose:
                                                     print(event.delta.content_delta, end="", flush=True)
+                                                stream_thinking.append(event.delta.content_delta)
                                             elif isinstance(event.delta, ToolCallPartDelta):
                                                 if tool_args_printed < TOOL_ARGS_CAP:
                                                     chunk = event.delta.args_delta
@@ -234,20 +303,62 @@ async def run_repl(
                                                     else:
                                                         print(chunk, end="", flush=True)
                                                     tool_args_printed += len(chunk)
+                                                # Accumulate full args for logging
+                                                if event.index in stream_tool_calls:
+                                                    stream_tool_calls[event.index]["args"] += event.delta.args_delta
+                                    
+                                    # End of stream — log accumulated content
+                                    if stream_thinking:
+                                        turn_logger.log_thinking("".join(stream_thinking))
+                                    if stream_text:
+                                        turn_logger.log_text("".join(stream_text))
+                                    for tc in stream_tool_calls.values():
+                                        turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
+                                    
                                     # End of the stream — per-turn token usage
                                     print(f"\n\033[48;5;240m📊 [Usage \033[0m{format_usage_line(stream.usage())}")
 
                             elif Agent.is_call_tools_node(node):
+                                # Just store tool calls - we'll log AND print when results are available
                                 for part in node.model_response.parts:
                                     if isinstance(part, ToolCallPart):
-                                        args_str = str(part.args)[:200] if part.args else ""
-                                        print(f"\033[97;48;5;166m⚙️ [Tool Exec] {part.tool_name}({args_str})\033[0m")
-                                        if gcs_audit_logger:
-                                            await gcs_audit_logger.log("tool_call", {
-                                                "tool": part.tool_name,
-                                                "args_preview": args_str,
-                                            })
+                                        pending_tool_calls.append((
+                                            part.tool_name,
+                                            part.args,
+                                            part.tool_call_id,
+                                        ))
                             elif Agent.is_end_node(node):
+                                # Flush any remaining pending tool calls
+                                if pending_tool_calls:
+                                    try:
+                                        all_msgs = run.all_messages()
+                                        for msg in reversed(all_msgs):
+                                            if isinstance(msg, ModelRequest):
+                                                for part in msg.parts:
+                                                    if isinstance(part, ToolReturnPart):
+                                                        for i, (tool_name, args, call_id) in enumerate(pending_tool_calls):
+                                                            if call_id == part.tool_call_id:
+                                                                # Log to file
+                                                                turn_logger.log_tool_exec(
+                                                                    tool_name,
+                                                                    args,
+                                                                    call_id,
+                                                                    result=part.content,
+                                                                )
+                                                                # Print to console
+                                                                args_str = str(args)[:200] if args else ""
+                                                                print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
+                                                                # Log to GCS
+                                                                if gcs_audit_logger:
+                                                                    await gcs_audit_logger.log("tool_call", {
+                                                                        "tool": tool_name,
+                                                                        "args_preview": args_str,
+                                                                    })
+                                                                pending_tool_calls.pop(i)
+                                                                break
+                                                break
+                                    except Exception:
+                                        pass
                                 if verbose:
                                     print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:200]}")
 

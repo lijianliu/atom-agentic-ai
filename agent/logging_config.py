@@ -5,9 +5,11 @@ Configures Python's logging module with:
   - Console handler  (WARNING+)  — keeps the REPL clean
   - Rotating file handler (DEBUG+) — full operational trace
 
-Log file location:
-    ~/.config/atom-agentic-ai/logs/atom.log
-    (auto-created on first import)
+Log directory (in priority order):
+    1. $ATOM_LOG_DIR (if set)
+    2. ~/atom-agentic-ai/logs/ (default)
+
+Fails fast if directory is not writable.
 
 Usage in any module:
     import logging
@@ -24,10 +26,49 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# Log directory resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_log_dir() -> Path:
+    """Resolve log directory.
+    
+    Priority:
+        1. $ATOM_LOG_DIR environment variable
+        2. ~/atom-agentic-ai/logs/ (default)
+    
+    Raises:
+        PermissionError: If log directory is not writable.
+    """
+    # 1. Environment variable override
+    env_dir = os.environ.get("ATOM_LOG_DIR", "").strip()
+    if env_dir:
+        log_dir = Path(env_dir)
+    else:
+        # 2. Default: ~/atom-agentic-ai/logs/
+        log_dir = Path.home() / "atom-agentic-ai" / "logs"
+    
+    # Fast fail: ensure directory exists and is writable
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        test_file = log_dir / ".write_test"
+        test_file.touch()
+        test_file.unlink()
+    except (PermissionError, OSError) as e:
+        raise PermissionError(
+            f"\n\n❌ Cannot write to log directory: {log_dir}\n"
+            f"   Fix with: mkdir -p {log_dir} && chmod 755 {log_dir}\n"
+            f"   Or set ATOM_LOG_DIR to a writable path.\n"
+        ) from e
+    
+    return log_dir
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_LOG_DIR = Path.home() / ".config" / "atom-agentic-ai" / "logs"
+_LOG_DIR = _resolve_log_dir()
+LOG_DIR = _LOG_DIR  # public alias for importers
 _LOG_FILE = _LOG_DIR / "atom.log"
 LOG_FILE_PATH = _LOG_FILE  # public alias for importers
 _MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file

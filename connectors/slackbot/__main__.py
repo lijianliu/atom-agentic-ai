@@ -16,10 +16,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Add agent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "agent"))
+from logging_config import LOG_DIR
+
 from .bot import SlackBot
 from .config import SlackBotConfig
 
-_LOG_DIR = Path.home() / ".config" / "atom-agentic-ai" / "logs"
+_LOG_DIR = LOG_DIR
 _LOG_FILE = _LOG_DIR / "slackbot.log"
 _MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file
 _BACKUP_COUNT = 4              # keep slackbot.log.1 … .4

@@ -18,10 +18,15 @@ log4j's `RollingFileAppender` with a size-based rotation policy.
 
 ### Log location
 
+Default: `~/atom-agentic-ai/logs/`
+
+Override with `$ATOM_LOG_DIR` environment variable.
+
 ```
-~/.config/atom-agentic-ai/logs/atom.log
+~/atom-agentic-ai/logs/atom.log
 ```
 
+The agent **fails fast** if the log directory is not writable.
 The path is printed to the console when the agent starts.
 
 ### Rotation policy

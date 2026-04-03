@@ -1,6 +1,6 @@
 """Session persistence — save / load message history + usage to disk.
 
-Uses pydantic-ai’s built-in ``ModelMessagesTypeAdapter`` for
+Uses pydantic-ai's built-in ``ModelMessagesTypeAdapter`` for
 type-safe (de)serialisation of the full conversation history.
 
 File format (JSON):
@@ -24,15 +24,17 @@ from typing import Any
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
+from logging_config import LOG_DIR
+
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = Path.home() / ".config" / "atom-agentic-ai" / "sessions"
+_SESSIONS_DIR = LOG_DIR / "sessions"
 
 
 def default_session_path() -> Path:
     """Generate a timestamped session file path.
 
-    e.g. ~/.config/atom-agentic-ai/sessions/2026-03-29_11-08-00.session.json
+    e.g. /var/log/atom-agentic-ai/sessions/2026-03-29_11-08-00.session.json
     """
     from datetime import datetime, timezone
 
