@@ -15,6 +15,7 @@ import signal
 from pathlib import Path
 
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -191,7 +192,11 @@ async def run_repl(
             async def _run() -> None:
                 nonlocal cancelled
 
-                async with agent.iter(prompt, message_history=message_history) as run:
+                async with agent.iter(
+                    prompt,
+                    message_history=message_history,
+                    usage_limits=UsageLimits(request_limit=500),
+                ) as run:
                     try:
                         async for node in run:
                             if Agent.is_model_request_node(node):
@@ -230,7 +235,7 @@ async def run_repl(
                                                         print(chunk, end="", flush=True)
                                                     tool_args_printed += len(chunk)
                                     # End of the stream — per-turn token usage
-                                    print(f"\n\033[48;5;240m📊 [Usage]\033[0m [{format_usage_line(stream.usage())}]")
+                                    print(f"\n\033[48;5;240m📊 [Usage \033[0m{format_usage_line(stream.usage())}")
 
                             elif Agent.is_call_tools_node(node):
                                 for part in node.model_response.parts:
@@ -318,10 +323,9 @@ async def _finalize_turn(
 
         usage = result.usage()
         accumulate_session_usage(session_usage, usage)
-        total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
-        label = "Turn (cancelled)" if cancelled else "Turn"
-        print(f"\n\033[48;5;240m📊 [Usage] {label}\033[0m {format_usage_line(usage)} / {total:,} total")
-        print(f"\033[48;5;240m📊 [Session]\033[0m {format_session_usage(session_usage)}")
+        label = "(cancelled) " if cancelled else ""
+        print(f"\n\033[48;5;240m📊 [Usage {label}\033[0m{format_usage_line(usage)}")
+        print(f"\033[48;5;240m📊 [Session \033[0m{format_session_usage(session_usage)}")
 
         if gcs_audit_logger:
             if cancelled:
@@ -368,12 +372,11 @@ async def _log_partial_usage(
     try:
         usage = run.usage()
         accumulate_session_usage(session_usage, usage)
-        total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
         print(
-            f"\n\033[48;5;240m📊 [Usage] Turn (cancelled)\033[0m "
-            f"{format_usage_line(usage)} / {total:,} total"
+            f"\n\033[48;5;240m📊 [Usage (cancelled) \033[0m"
+            f"{format_usage_line(usage)}"
         )
-        print(f"\033[48;5;240m📊 [Session]\033[0m {format_session_usage(session_usage)}")
+        print(f"\033[48;5;240m📊 [Session \033[0m{format_session_usage(session_usage)}")
         if gcs_audit_logger:
             await gcs_audit_logger.log("turn_cancelled", build_usage_dict(usage))
     except Exception as usage_err:

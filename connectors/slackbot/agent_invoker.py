@@ -273,9 +273,8 @@ class AgentInvoker:
             usage = result.usage()
             usage_info = self._extract_usage(usage)
 
-            # Build final usage line with totals
-            total = (usage.input_tokens or 0) + (usage.output_tokens or 0)
-            usage_line = f"📊 [Usage] Turn {format_usage_line(usage)} / {total:,} total"
+            # Build final usage line (2-line format)
+            usage_line = f"📊 [Usage {format_usage_line(usage)}"
 
             return output, usage_info, usage_line
 
