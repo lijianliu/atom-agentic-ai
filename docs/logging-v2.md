@@ -53,19 +53,39 @@ Where:
 - `S` = sequence within that request (1-based, 3 chars, padded with `_`)
 - `type` = `thinking` | `text` | `tool-plan` | `tool-exec`
 
-**Examples:**
+### Log File Naming
+
 ```
-turn__1.seq__1.text.txt        # Usage #1: LLM text output
-turn__1.seq__2.tool-plan.txt   # Usage #1: LLM plans tool A
-turn__1.seq__3.tool-plan.txt   # Usage #1: LLM plans tool B
-turn__1.seq__4.tool-exec.txt   # Usage #1: Tool A execution + result
-turn__1.seq__5.tool-exec.txt   # Usage #1: Tool B execution + result
-turn__2.seq__1.text.txt        # Usage #2: LLM text output
-turn__2.seq__2.tool-plan.txt   # Usage #2: LLM plans tool C
-turn__2.seq__3.tool-exec.txt   # Usage #2: Tool C execution + result
+t{T}.{S}.{type}.{label}.txt
 ```
 
-**Note:** Tool executions (`tool-exec`) are logged under the same turn that requested them, not the turn that receives the results.
+| Component | Description |
+|-----------|-------------|
+| `T` | Turn number (model request #), 3 chars, padded with `_` |
+| `S` | Sequence within turn, 3 chars, padded with `_` |
+| `type` | `thinking`, `text`, `tool-plan`, `tool-exec` |
+| `label` | 50-char description (alphanumeric + `_` only) |
+
+**Examples:**
+```
+t__1.__1.text.Let_me_help_you_find_that_information.txt
+t__1.__2.tool-plan.execute_command.git_clone_git_gecgithub.txt
+t__1.__3.tool-plan.read_file.agent_repl_py.txt
+t__1.__4.tool-exec.execute_command.git_clone_git_gecgithub.txt
+t__1.__5.tool-exec.read_file.agent_repl_py.txt
+t__2.__1.text.Based_on_the_results_I_found.txt
+```
+
+**Label rules:**
+- Only `0-9`, `a-z`, `A-Z` allowed
+- Other characters → `_`
+- Multiple underscores collapsed
+- Truncated to 50 chars
+- Auto-generated:
+  - text/thinking: from content
+  - tool-plan/tool-exec: `{tool_name}.{args_preview}`
+
+**Note:** Tool executions (`tool-exec`) are logged under the same turn that requested them.
 
 Files sort naturally with `ls` — chronological order within and across turns.
 

@@ -7,12 +7,13 @@ human-readable MIME multipart format.
 See docs/logging-v2.md for the design document.
 
 File naming:
-    {session_dir}/turn{T}.seq{S}.{type}.txt
+    {session_dir}/t{T}.{S}.{type}.{label}.txt
 
 Where:
-    T = model request number (matches Usage #N, 3 chars, padded with '_')
-    S = sequence within request (1-based, 3 chars, padded with '_')
+    T = turn number (model request #), 3 chars, padded with '_'
+    S = sequence within turn, 3 chars, padded with '_'
     type = thinking | text | tool-plan | tool-exec
+    label = 50-char description (alphanumeric only, others become '_')
 
 Usage:
     logger = TurnLogger.create(session_id)
@@ -56,6 +57,31 @@ def _format_args(args: Any) -> str:
     return str(args)
 
 
+def _sanitize_label(text: str, max_len: int = 50) -> str:
+    """Sanitize text for use in filename.
+    
+    - Only allows 0-9, a-z, A-Z
+    - Replaces other characters with '_'
+    - Collapses multiple underscores
+    - Strips leading/trailing underscores
+    - Truncates to max_len (default 50)
+    """
+    if not text:
+        return ""
+    result = []
+    for c in text:
+        if c.isalnum():
+            result.append(c)
+        else:
+            result.append("_")
+    sanitized = "".join(result)
+    # Collapse multiple underscores
+    while "__" in sanitized:
+        sanitized = sanitized.replace("__", "_")
+    # Strip and truncate
+    return sanitized.strip("_")[:max_len]
+
+
 class TurnLogger:
     """Turn-by-Turn conversation logger with MIME multipart format.
     
@@ -95,6 +121,7 @@ class TurnLogger:
         log_type: str,
         headers: dict[str, str],
         parts: list[tuple[str, str]],  # [(content_type, body), ...]
+        label: str = "",
     ) -> Path:
         """Write a MIME multipart-style log file.
         
@@ -102,6 +129,7 @@ class TurnLogger:
             log_type: File type suffix (thinking, text, tool-plan, tool-exec)
             headers: Key-value pairs for the header block
             parts: List of (content_type, body) tuples
+            label: 30-char description for filename (auto-sanitized)
             
         Returns:
             Path to the created file
@@ -109,7 +137,13 @@ class TurnLogger:
         seq = self._next_sequence()
         turn_str = f"{self._turn:3d}".replace(" ", "_")
         seq_str = f"{seq:3d}".replace(" ", "_")
-        filename = f"turn{turn_str}.seq{seq_str}.{log_type}.txt"
+        
+        # Build filename with label
+        label_part = _sanitize_label(label)
+        if label_part:
+            filename = f"t{turn_str}.{seq_str}.{log_type}.{label_part}.txt"
+        else:
+            filename = f"t{turn_str}.{seq_str}.{log_type}.txt"
         filepath = self.session_dir / filename
         
         boundary = _generate_boundary()
@@ -135,20 +169,26 @@ class TurnLogger:
         logger.debug("Wrote %s", filepath)
         return filepath
     
-    def log_thinking(self, content: str) -> Path:
+    def log_thinking(self, content: str, label: str = "") -> Path:
         """Log extended thinking content."""
+        if not label and content:
+            label = content[:50]  # Auto-generate from content
         return self._write_file(
             log_type="thinking",
             headers={},
             parts=[("thinking", content)],
+            label=label,
         )
     
-    def log_text(self, content: str) -> Path:
+    def log_text(self, content: str, label: str = "") -> Path:
         """Log LLM text response."""
+        if not label and content:
+            label = content[:50]  # Auto-generate from content
         return self._write_file(
             log_type="text",
             headers={},
             parts=[("text", content)],
+            label=label,
         )
     
     def log_tool_plan(
@@ -156,16 +196,23 @@ class TurnLogger:
         tool_name: str,
         args: Any,
         call_id: str | None = None,
+        label: str = "",
     ) -> Path:
         """Log tool call plan (what LLM wants to call)."""
         headers = {"Tool": tool_name}
         if call_id:
             headers["Call-ID"] = call_id
         
+        if not label:
+            # Auto-generate: tool_name + args preview
+            args_preview = _format_args(args).replace("\n", " ")[:100]
+            label = f"{tool_name}.{args_preview}"
+        
         return self._write_file(
             log_type="tool-plan",
             headers=headers,
             parts=[("input", _format_args(args))],
+            label=label,
         )
     
     def log_tool_exec(
@@ -175,6 +222,7 @@ class TurnLogger:
         call_id: str | None,
         result: Any,
         error: str | None = None,
+        label: str = "",
     ) -> Path:
         """Log tool execution (input + output/error)."""
         headers = {"Tool": tool_name}
@@ -193,10 +241,16 @@ class TurnLogger:
                 result_str = str(result) if result is not None else ""
             parts.append(("output", result_str))
         
+        if not label:
+            # Auto-generate: tool_name + args preview
+            args_preview = _format_args(args).replace("\n", " ")[:100]
+            label = f"{tool_name}.{args_preview}"
+        
         return self._write_file(
             log_type="tool-exec",
             headers=headers,
             parts=parts,
+            label=label,
         )
     
     @property
