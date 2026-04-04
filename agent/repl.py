@@ -218,40 +218,30 @@ async def run_repl(
                         
                         async for node in run:
                             if Agent.is_model_request_node(node):
-                                # FIRST: Log AND print tool results from previous turn
-                                if pending_tool_calls:
-                                    try:
-                                        all_msgs = run.all_messages()
-                                        for msg in reversed(all_msgs):
-                                            if isinstance(msg, ModelRequest):
-                                                for part in msg.parts:
-                                                    if isinstance(part, ToolReturnPart):
-                                                        for i, (tool_name, args, call_id) in enumerate(pending_tool_calls):
-                                                            if call_id == part.tool_call_id:
-                                                                # Log to file
-                                                                turn_logger.log_tool_exec(
-                                                                    tool_name,
-                                                                    args,
-                                                                    call_id,
-                                                                    result=part.content,
-                                                                )
-                                                                # Print to console
-                                                                args_str = str(args)[:200] if args else ""
-                                                                print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
-                                                                # Log to GCS
-                                                                if gcs_audit_logger:
-                                                                    await gcs_audit_logger.log("tool_call", {
-                                                                        "tool": tool_name,
-                                                                        "args_preview": args_str,
-                                                                    })
-                                                                pending_tool_calls.pop(i)
-                                                                break
-                                                break  # Only check most recent ModelRequest
-                                    except Exception:
-                                        pass
-                                
-                                # NOW start a new turn
+                                # Start a new turn
                                 turn_logger.start_turn()
+                                
+                                # Log tool results from previous turn
+                                # (the ModelRequestNode.request contains ToolReturnParts)
+                                if pending_tool_calls:
+                                    for part in node.request.parts:
+                                        if isinstance(part, ToolReturnPart):
+                                            for tool_name, args, call_id in list(pending_tool_calls):
+                                                if call_id == part.tool_call_id:
+                                                    turn_logger.log_tool_exec(
+                                                        tool_name, args, call_id,
+                                                        result=part.content,
+                                                        override_turn=turn_logger.previous_turn,
+                                                    )
+                                                    args_str = str(args)[:200] if args else ""
+                                                    print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
+                                                    if gcs_audit_logger:
+                                                        await gcs_audit_logger.log("tool_call", {
+                                                            "tool": tool_name,
+                                                            "args_preview": args_str,
+                                                        })
+                                                    pending_tool_calls.remove((tool_name, args, call_id))
+                                                    break
                                 
                                 # --- Stream the model's response token-by-token ---
                                 tool_args_printed = 0       # chars of tool args emitted
@@ -332,11 +322,12 @@ async def run_repl(
                                 if pending_tool_calls:
                                     try:
                                         all_msgs = run.all_messages()
-                                        for msg in reversed(all_msgs):
+                                        # Search ALL messages for tool results
+                                        for msg in all_msgs:
                                             if isinstance(msg, ModelRequest):
                                                 for part in msg.parts:
                                                     if isinstance(part, ToolReturnPart):
-                                                        for i, (tool_name, args, call_id) in enumerate(pending_tool_calls):
+                                                        for i, (tool_name, args, call_id) in enumerate(list(pending_tool_calls)):
                                                             if call_id == part.tool_call_id:
                                                                 # Log to file
                                                                 turn_logger.log_tool_exec(
@@ -354,9 +345,8 @@ async def run_repl(
                                                                         "tool": tool_name,
                                                                         "args_preview": args_str,
                                                                     })
-                                                                pending_tool_calls.pop(i)
+                                                                pending_tool_calls.remove((tool_name, args, call_id))
                                                                 break
-                                                break
                                     except Exception:
                                         pass
                                 if verbose:

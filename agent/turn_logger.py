@@ -12,7 +12,7 @@ File naming:
 Where:
     T = turn number (model request #), 3 chars, padded with '_'
     S = sequence within turn, 3 chars, padded with '_'
-    type = thinking | text | tool-plan | tool-exec
+    type = thinking | text | plan | exec
     label = 50-char description (alphanumeric only, others become '_')
 
 Usage:
@@ -92,7 +92,7 @@ class TurnLogger:
     def __init__(self, session_dir: Path) -> None:
         self.session_dir = session_dir
         self._turn: int = 0
-        self._sequence: int = 0
+        self._sequences: dict[int, int] = {}  # turn -> last sequence
         
     @classmethod
     def create(cls, session_id: str) -> "TurnLogger":
@@ -106,15 +106,17 @@ class TurnLogger:
         return cls(session_dir)
     
     def start_turn(self) -> None:
-        """Start a new turn. Increments turn counter, resets sequence."""
+        """Start a new turn. Increments turn counter."""
         self._turn += 1
-        self._sequence = 0
+        self._sequences[self._turn] = 0
         logger.debug("Turn %d started", self._turn)
     
-    def _next_sequence(self) -> int:
-        """Get next sequence number for current turn."""
-        self._sequence += 1
-        return self._sequence
+    def _next_sequence(self, turn: int | None = None) -> int:
+        """Get next sequence number for given turn (default: current)."""
+        t = turn if turn is not None else self._turn
+        self._sequences.setdefault(t, 0)
+        self._sequences[t] += 1
+        return self._sequences[t]
     
     def _write_file(
         self,
@@ -122,11 +124,12 @@ class TurnLogger:
         headers: dict[str, str],
         parts: list[tuple[str, str]],  # [(content_type, body), ...]
         label: str = "",
+        override_turn: int | None = None,
     ) -> Path:
         """Write a MIME multipart-style log file.
         
         Args:
-            log_type: File type suffix (thinking, text, tool-plan, tool-exec)
+            log_type: File type suffix (thinking, text, plan, exec)
             headers: Key-value pairs for the header block
             parts: List of (content_type, body) tuples
             label: 30-char description for filename (auto-sanitized)
@@ -134,8 +137,9 @@ class TurnLogger:
         Returns:
             Path to the created file
         """
-        seq = self._next_sequence()
-        turn_str = f"{self._turn:3d}".replace(" ", "_")
+        turn = override_turn if override_turn is not None else self._turn
+        seq = self._next_sequence(turn)
+        turn_str = f"{turn:3d}".replace(" ", "_")
         seq_str = f"{seq:3d}".replace(" ", "_")
         
         # Build filename with label
@@ -146,11 +150,14 @@ class TurnLogger:
             filename = f"t{turn_str}.{seq_str}.{log_type}.txt"
         filepath = self.session_dir / filename
         
+        # Ensure directory exists (defensive — create() should have done this)
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        
         boundary = _generate_boundary()
         
         lines = [f"Boundary: {boundary}"]
         lines.append(f"Timestamp: {_utcnow()}")
-        lines.append(f"Turn: {self._turn}")
+        lines.append(f"Turn: {turn}")
         for key, value in headers.items():
             lines.append(f"{key}: {value}")
         lines.append("")  # Blank line after headers
@@ -209,7 +216,7 @@ class TurnLogger:
             label = f"{tool_name}.{args_preview}"
         
         return self._write_file(
-            log_type="tool-plan",
+            log_type="plan",
             headers=headers,
             parts=[("input", _format_args(args))],
             label=label,
@@ -223,8 +230,14 @@ class TurnLogger:
         result: Any,
         error: str | None = None,
         label: str = "",
+        override_turn: int | None = None,
     ) -> Path:
-        """Log tool execution (input + output/error)."""
+        """Log tool execution (input + output/error).
+        
+        Args:
+            override_turn: If set, log to this turn instead of current.
+                          Used to attribute tool results to the requesting turn.
+        """
         headers = {"Tool": tool_name}
         if call_id:
             headers["Call-ID"] = call_id
@@ -247,11 +260,17 @@ class TurnLogger:
             label = f"{tool_name}.{args_preview}"
         
         return self._write_file(
-            log_type="tool-exec",
+            log_type="exec",
             headers=headers,
             parts=parts,
             label=label,
+            override_turn=override_turn,
         )
+    
+    @property
+    def previous_turn(self) -> int:
+        """Previous turn number (for attributing tool results)."""
+        return max(self._turn - 1, 1)
     
     @property
     def current_turn(self) -> int:
