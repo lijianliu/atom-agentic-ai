@@ -132,7 +132,6 @@ else
   [ -n "$SYSTEM_PROMPT" ] && AGENT_FLAGS="$AGENT_FLAGS --system-prompt $SYSTEM_PROMPT"
   if [ "$ROOT_MODE" = true ]; then
     echo "🚀 Starting AtomAI (ROOT MODE — local tools)..."
-    echo "   ⚠️  Working directory: $(pwd)"
   else
     echo "🚀 Starting AtomAI (MCP Sandbox Mode)..."
     echo "   MCP URL: ${MCP_URL}"
