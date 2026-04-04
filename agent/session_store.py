@@ -32,15 +32,22 @@ logger = logging.getLogger(__name__)
 _SESSIONS_DIR = LOG_DIR / "sessions"
 
 
-def default_session_path() -> Path:
-    """Generate a new timestamped session file path.
+def default_session_path(session_id: str | None = None) -> Path:
+    """Generate a new session file path using the given *session_id*.
+
+    If *session_id* is provided the file is named ``<session_id>.session.json``
+    so that the session file matches the turn-log folder and GCS session id.
 
     Always creates a fresh session.  To resume a previous session,
     pass ``--session <file>`` explicitly on the command line.
     """
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-    return _SESSIONS_DIR / f"{ts}.session.json"
+    if session_id is None:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+        name = ts
+    else:
+        name = session_id
+    return _SESSIONS_DIR / f"{name}.session.json"
 
 
 def save_session(

@@ -146,9 +146,9 @@ async def run_repl(
     gcs_audit_logger = GCSLogger.from_env()
     if gcs_audit_logger:
         logger.info("GCS logging enabled → %s", gcs_audit_logger.gcs_uri)
+        print(f"   \U0001f194 Session ID: {gcs_audit_logger.session_id}")
         print(f"   \U0001f4dd GCS: {gcs_audit_logger.gcs_uri}")
         print(f"   \U0001f464 User: {gcs_audit_logger.username}")
-        print(f"   \U0001f194 Session: {gcs_audit_logger.session_id}")
         await gcs_audit_logger.warm_token()
     else:
         logger.info("GCS logging disabled (ATOM_AUDIT_LOG_GCS_PATH not set)")
@@ -164,6 +164,7 @@ async def run_repl(
         username = os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser() or "unknown"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S.%f")[:-3] + "Z"
         session_id = f"{username}-{ts}"
+        print(f"   \U0001f194 Session ID: {session_id}")
     
     turn_logger = TurnLogger.create(session_id)
     print(f"   \U0001f4c1 Turn logs: {turn_logger.session_dir}")
@@ -173,7 +174,7 @@ async def run_repl(
     async with agent:
         # ── Resolve session file (auto-generate if not specified) ──
         if session_file is None:
-            session_file = default_session_path()
+            session_file = default_session_path(session_id)
 
         message_history, session_usage = load_session(session_file)
         if message_history:
