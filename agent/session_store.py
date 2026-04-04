@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,24 +31,39 @@ logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = LOG_DIR / "sessions"
 
+# Maximum age (in seconds) of a session file to be considered resumable.
+_RESUME_MAX_AGE_SECS = 3600  # 1 hour
+
 
 def default_session_path() -> Path:
-    """Generate a timestamped session file path.
+    """Return the most recent session file if it was modified within the last
+    hour, otherwise generate a new timestamped path.
 
-    e.g. /var/log/atom-agentic-ai/sessions/2026-03-29_11-08-00.session.json
+    This lets the agent automatically resume the previous session when
+    restarted quickly, while still creating a fresh file when enough
+    time has passed.
     """
-    from datetime import datetime, timezone
-
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Look for the most recently modified session file
+    session_files = sorted(
+        _SESSIONS_DIR.glob("*.session.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if session_files:
+        latest = session_files[0]
+        age_secs = datetime.now(timezone.utc).timestamp() - latest.stat().st_mtime
+        if age_secs <= _RESUME_MAX_AGE_SECS:
+            logger.info(
+                "Resuming recent session %s (%.0fs old)", latest.name, age_secs
+            )
+            return latest
+
+    # No recent session — create a new one
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     return _SESSIONS_DIR / f"{ts}.session.json"
-
-
-def _migrate_usage(usage: dict[str, Any]) -> dict[str, Any]:
-    """Migrate old usage dicts: rename 'turns' → 'queries' for backward compat."""
-    if "turns" in usage and "queries" not in usage:
-        usage["queries"] = usage.pop("turns")
-    return usage
 
 
 def save_session(
@@ -101,7 +117,6 @@ def load_session(
         # Restore usage (merge with defaults so new keys are covered)
         usage = new_session_usage()
         saved_usage = envelope.get("usage", {})
-        _migrate_usage(saved_usage)
         usage.update(saved_usage)
 
         logger.info(

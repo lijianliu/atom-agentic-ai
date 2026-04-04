@@ -179,7 +179,7 @@ async def run_repl(
         if message_history:
             print(
                 f"   ♻️  Resumed session from {session_file}"
-                f" ({len(message_history)} messages, {session_usage.get('queries', session_usage.get('turns', 0))} queries)"
+                f" ({len(message_history)} messages, {session_usage.get('queries', 0)} queries)"
             )
             print(f"   📊 {format_session_usage(session_usage)}")
         else:

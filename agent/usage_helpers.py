@@ -3,7 +3,7 @@ usage_helpers.py — Token usage formatting utilities.
 
 Terminology hierarchy: Session > Query > Turn > Sequence
 - Session: one REPL session
-- Query: one user prompt (what was previously called a "turn" at session level)
+- Query: one user prompt
 - Turn: one model request within a query
 - Sequence: one logged item within a turn
 """
@@ -130,7 +130,7 @@ def format_session_usage(session: dict) -> str:
     out = session["output_tokens"]
     cache_read = session["cache_read_tokens"]
     cache_write = session["cache_write_tokens"]
-    queries = session.get("queries", session.get("turns", 0))  # backward compat
+    queries = session["queries"]
     reqs = session["requests"]
     tools = session["tool_calls"]
     new_t = inp - cache_write - cache_read
