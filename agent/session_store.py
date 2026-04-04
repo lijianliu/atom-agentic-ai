@@ -31,37 +31,14 @@ logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = LOG_DIR / "sessions"
 
-# Maximum age (in seconds) of a session file to be considered resumable.
-_RESUME_MAX_AGE_SECS = 3600  # 1 hour
-
 
 def default_session_path() -> Path:
-    """Return the most recent session file if it was modified within the last
-    hour, otherwise generate a new timestamped path.
+    """Generate a new timestamped session file path.
 
-    This lets the agent automatically resume the previous session when
-    restarted quickly, while still creating a fresh file when enough
-    time has passed.
+    Always creates a fresh session.  To resume a previous session,
+    pass ``--session <file>`` explicitly on the command line.
     """
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Look for the most recently modified session file
-    session_files = sorted(
-        _SESSIONS_DIR.glob("*.session.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-
-    if session_files:
-        latest = session_files[0]
-        age_secs = datetime.now(timezone.utc).timestamp() - latest.stat().st_mtime
-        if age_secs <= _RESUME_MAX_AGE_SECS:
-            logger.info(
-                "Resuming recent session %s (%.0fs old)", latest.name, age_secs
-            )
-            return latest
-
-    # No recent session — create a new one
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     return _SESSIONS_DIR / f"{ts}.session.json"
 
