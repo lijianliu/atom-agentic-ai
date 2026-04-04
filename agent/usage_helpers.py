@@ -1,5 +1,11 @@
 """
 usage_helpers.py — Token usage formatting utilities.
+
+Terminology hierarchy: Session > Query > Turn > Sequence
+- Session: one REPL session
+- Query: one user prompt (what was previously called a "turn" at session level)
+- Turn: one model request within a query
+- Sequence: one logged item within a turn
 """
 from __future__ import annotations
 
@@ -21,8 +27,14 @@ def _calc_cost(cache_read: int, cache_write: int, new: int, out: int) -> tuple[f
     return read_cost, write_cost, new_cost, out_cost, total
 
 
-def format_usage_line(usage) -> str:
-    """Format a pydantic-ai Usage object into a human-readable 3-line stats string."""
+def format_usage_line(usage, query: int = 0, turn: int = 0) -> str:
+    """Format a pydantic-ai Usage object into a human-readable stats string.
+    
+    Args:
+        usage: pydantic-ai Usage object
+        query: current query number (for display label)
+        turn: current turn number within query (for display label)
+    """
     in_t = usage.input_tokens or 0
     out_t = usage.output_tokens or 0
     cache_write = getattr(usage, 'cache_write_tokens', 0) or 0
@@ -39,8 +51,15 @@ def format_usage_line(usage) -> str:
     cache_write_price = PRICE_INPUT_BASE * PRICE_CACHE_WRITE_RATE
     
     # Line 1: Main stats (caller adds 📊 [Usage prefix)
+    if query > 0 and turn > 0:
+        label = f"Query {query} Turn {turn}"
+    elif query > 0:
+        label = f"Query {query}"
+    else:
+        label = f"#{reqs}"
+    
     line1 = (
-        f"#{reqs}] | ${total_cost:.2f} | "
+        f"{label}] | ${total_cost:.2f} | "
         f"{in_t:,} in (= {cache_read:,} cache read + {cache_write:,} cache write + {new_t:,} new) "
         f"\u2192 {out_t:,} out | {tools} tools"
     )
@@ -89,7 +108,7 @@ def new_session_usage() -> dict:
         "cache_read_tokens": 0,
         "requests": 0,
         "tool_calls": 0,
-        "turns": 0,
+        "queries": 0,
     }
 
 
@@ -101,17 +120,17 @@ def accumulate_session_usage(session: dict, usage) -> None:
     session["cache_read_tokens"] += getattr(usage, 'cache_read_tokens', 0) or 0
     session["requests"] += getattr(usage, 'requests', 0) or 0
     session["tool_calls"] += getattr(usage, 'tool_calls', 0) or 0
-    session["turns"] += 1
+    session["queries"] += 1
     session["total_tokens"] = session["input_tokens"] + session["output_tokens"]
 
 
 def format_session_usage(session: dict) -> str:
-    """Format session accumulator into a human-readable 3-line string."""
+    """Format session accumulator into a human-readable string."""
     inp = session["input_tokens"]
     out = session["output_tokens"]
     cache_read = session["cache_read_tokens"]
     cache_write = session["cache_write_tokens"]
-    turns = session["turns"]
+    queries = session.get("queries", session.get("turns", 0))  # backward compat
     reqs = session["requests"]
     tools = session["tool_calls"]
     new_t = inp - cache_write - cache_read
@@ -125,7 +144,7 @@ def format_session_usage(session: dict) -> str:
     
     # Line 1: Main stats (caller adds 📊 [Session prefix)
     line1 = (
-        f"{turns} turns, {reqs} reqs] | ${total_cost:.2f} | "
+        f"{queries} queries, {reqs} reqs] | ${total_cost:.2f} | "
         f"{inp:,} in (= {cache_read:,} cache read + {cache_write:,} cache write + {new_t:,} new) "
         f"\u2192 {out:,} out | {tools} tools"
     )

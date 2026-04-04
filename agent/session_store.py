@@ -43,6 +43,13 @@ def default_session_path() -> Path:
     return _SESSIONS_DIR / f"{ts}.session.json"
 
 
+def _migrate_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    """Migrate old usage dicts: rename 'turns' → 'queries' for backward compat."""
+    if "turns" in usage and "queries" not in usage:
+        usage["queries"] = usage.pop("turns")
+    return usage
+
+
 def save_session(
     message_history: list,
     session_usage: dict[str, Any],
@@ -64,8 +71,8 @@ def save_session(
     tmp.write_text(json.dumps(envelope, indent=2, ensure_ascii=False))
     tmp.replace(path)  # atomic rename
     logger.info(
-        "Session saved to %s (%d messages, %d turns)",
-        path, len(message_history), session_usage.get("turns", 0),
+        "Session saved to %s (%d messages, %d queries)",
+        path, len(message_history), session_usage.get("queries", 0),
     )
 
 
@@ -76,7 +83,7 @@ def load_session(
 
     Returns:
         (message_history, session_usage) — both empty/fresh if file
-        doesn’t exist or is corrupted.
+        doesn't exist or is corrupted.
     """
     from usage_helpers import new_session_usage
 
@@ -87,17 +94,19 @@ def load_session(
         raw = path.read_text(encoding="utf-8")
         envelope = json.loads(raw)
 
-        # Deserialise messages via pydantic-ai’s type adapter
+        # Deserialise messages via pydantic-ai's type adapter
         messages_raw = json.dumps(envelope["messages"]).encode()
         history = list(ModelMessagesTypeAdapter.validate_json(messages_raw))
 
         # Restore usage (merge with defaults so new keys are covered)
         usage = new_session_usage()
-        usage.update(envelope.get("usage", {}))
+        saved_usage = envelope.get("usage", {})
+        _migrate_usage(saved_usage)
+        usage.update(saved_usage)
 
         logger.info(
-            "Session loaded from %s (%d messages, %d turns)",
-            path, len(history), usage.get("turns", 0),
+            "Session loaded from %s (%d messages, %d queries)",
+            path, len(history), usage.get("queries", 0),
         )
         return history, usage
 

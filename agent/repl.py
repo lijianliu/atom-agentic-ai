@@ -179,7 +179,7 @@ async def run_repl(
         if message_history:
             print(
                 f"   ♻️  Resumed session from {session_file}"
-                f" ({len(message_history)} messages, {session_usage['turns']} turns)"
+                f" ({len(message_history)} messages, {session_usage.get('queries', session_usage.get('turns', 0))} queries)"
             )
             print(f"   📊 {format_session_usage(session_usage)}")
         else:
@@ -200,6 +200,9 @@ async def run_repl(
                 gcs_audit_logger.start_turn(prompt)
                 await gcs_audit_logger.log("user_prompt", {"prompt": prompt})
 
+            # Start a new query
+            turn_logger.start_query()
+
             print("⏳ Thinking... (Ctrl+C to cancel)")
             cancelled = False
             loop = asyncio.get_running_loop()
@@ -218,7 +221,7 @@ async def run_repl(
                         
                         async for node in run:
                             if Agent.is_model_request_node(node):
-                                # Start a new turn
+                                # Start a new turn within this query
                                 turn_logger.start_turn()
                                 
                                 # Log tool results from previous turn
@@ -231,6 +234,7 @@ async def run_repl(
                                                     turn_logger.log_tool_exec(
                                                         tool_name, args, call_id,
                                                         result=part.content,
+                                                        override_query=turn_logger.current_query,
                                                         override_turn=turn_logger.previous_turn,
                                                     )
                                                     args_str = str(args)[:200] if args else ""
@@ -306,7 +310,7 @@ async def run_repl(
                                         turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
                                     
                                     # End of the stream — per-turn token usage
-                                    print(f"\n\033[48;5;240m📊 [Usage \033[0m{format_usage_line(stream.usage())}")
+                                    print(f"\n\033[48;5;240m📊 [Usage \033[0m{format_usage_line(stream.usage(), query=turn_logger.current_query, turn=turn_logger.current_turn)}")
 
                             elif Agent.is_call_tools_node(node):
                                 # Just store tool calls - we'll log AND print when results are available
@@ -361,6 +365,7 @@ async def run_repl(
                         await _finalize_turn(
                             run, message_history, session_usage,
                             cancelled, gcs_audit_logger, verbose,
+                            turn_logger,
                         )
 
             task = asyncio.ensure_future(_run())
@@ -413,6 +418,7 @@ async def _finalize_turn(
     cancelled: bool,
     gcs_audit_logger: GCSLogger | None,
     verbose: bool,
+    turn_logger: TurnLogger | None = None,
 ) -> None:
     """Save history & print usage after every turn (normal or cancelled)."""
     try:
@@ -425,7 +431,8 @@ async def _finalize_turn(
         usage = result.usage()
         accumulate_session_usage(session_usage, usage)
         label = "(cancelled) " if cancelled else ""
-        print(f"\n\033[48;5;240m📊 [Usage {label}\033[0m{format_usage_line(usage)}")
+        query = turn_logger.current_query if turn_logger else 0
+        print(f"\n\033[48;5;240m📊 [Usage {label}\033[0m{format_usage_line(usage, query=query)}")
         print(f"\033[48;5;240m📊 [Session \033[0m{format_session_usage(session_usage)}")
 
         if gcs_audit_logger:
@@ -439,7 +446,7 @@ async def _finalize_turn(
         # run.result not available (cancelled before End node).
         # Preserve partial conversation history.
         _save_partial_history(run, message_history)
-        await _log_partial_usage(run, message_history, session_usage, gcs_audit_logger)
+        await _log_partial_usage(run, message_history, session_usage, gcs_audit_logger, turn_logger)
 
 
 def _save_partial_history(run, message_history: list) -> None:
@@ -468,14 +475,16 @@ async def _log_partial_usage(
     message_history: list,
     session_usage: dict,
     gcs_audit_logger: GCSLogger | None,
+    turn_logger: TurnLogger | None = None,
 ) -> None:
     """Best-effort usage logging after cancellation."""
     try:
         usage = run.usage()
         accumulate_session_usage(session_usage, usage)
+        query = turn_logger.current_query if turn_logger else 0
         print(
             f"\n\033[48;5;240m📊 [Usage (cancelled) \033[0m"
-            f"{format_usage_line(usage)}"
+            f"{format_usage_line(usage, query=query)}"
         )
         print(f"\033[48;5;240m📊 [Session \033[0m{format_session_usage(session_usage)}")
         if gcs_audit_logger:

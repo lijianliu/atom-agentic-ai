@@ -1,22 +1,32 @@
 """
-turn_logger.py — Turn-by-Turn REPL Conversation Logging
-========================================================
+turn_logger.py — Session / Query / Turn / Sequence Conversation Logging
+========================================================================
 Logs every LLM output (thinking, text, tool plan, tool exec) in 
 human-readable MIME multipart format.
 
 See docs/logging-v2.md for the design document.
 
+Hierarchy:
+    Session > Query > Turn > Sequence
+
+    Session = one REPL session (folder)
+    Query   = one user prompt  (q01, q02, ...)
+    Turn    = one model request within a query (t01, t02, ...)
+    Sequence = one logged item within a turn (s01, s02, ...)
+
 File naming:
-    {session_dir}/t{T}.{S}.{type}.{label}.txt
+    {session_dir}/q{QQ}.t{TT}.s{SS}.{type}.{label}.txt
 
 Where:
-    T = turn number (model request #), 3 chars, padded with '_'
-    S = sequence within turn, 3 chars, padded with '_'
+    QQ = query number, 2 digits, zero-padded
+    TT = turn number (model request #), 2 digits, zero-padded
+    SS = sequence within turn, 2 digits, zero-padded
     type = thinking | text | plan | exec
     label = 50-char description (alphanumeric only, others become '_')
 
 Usage:
     logger = TurnLogger.create(session_id)
+    logger.start_query()
     logger.start_turn()
     logger.log_thinking(content)
     logger.log_text(content)
@@ -83,16 +93,18 @@ def _sanitize_label(text: str, max_len: int = 50) -> str:
 
 
 class TurnLogger:
-    """Turn-by-Turn conversation logger with MIME multipart format.
+    """Session/Query/Turn/Sequence conversation logger with MIME multipart format.
     
     Creates human-readable log files for each piece of LLM output,
-    organized by turn and sequence number.
+    organized by query, turn, and sequence number.
     """
     
     def __init__(self, session_dir: Path) -> None:
         self.session_dir = session_dir
+        self._query: int = 0
         self._turn: int = 0
-        self._sequences: dict[int, int] = {}  # turn -> last sequence
+        # (query, turn) -> last sequence number
+        self._sequences: dict[tuple[int, int], int] = {}
         
     @classmethod
     def create(cls, session_id: str) -> "TurnLogger":
@@ -105,18 +117,26 @@ class TurnLogger:
         logger.info("TurnLogger created: %s", session_dir)
         return cls(session_dir)
     
-    def start_turn(self) -> None:
-        """Start a new turn. Increments turn counter."""
-        self._turn += 1
-        self._sequences[self._turn] = 0
-        logger.debug("Turn %d started", self._turn)
+    def start_query(self) -> None:
+        """Start a new query (user prompt). Increments query counter, resets turn."""
+        self._query += 1
+        self._turn = 0
+        logger.debug("Query %d started", self._query)
     
-    def _next_sequence(self, turn: int | None = None) -> int:
-        """Get next sequence number for given turn (default: current)."""
+    def start_turn(self) -> None:
+        """Start a new turn (model request) within the current query."""
+        self._turn += 1
+        self._sequences[(self._query, self._turn)] = 0
+        logger.debug("Query %d Turn %d started", self._query, self._turn)
+    
+    def _next_sequence(self, query: int | None = None, turn: int | None = None) -> int:
+        """Get next sequence number for given query/turn (default: current)."""
+        q = query if query is not None else self._query
         t = turn if turn is not None else self._turn
-        self._sequences.setdefault(t, 0)
-        self._sequences[t] += 1
-        return self._sequences[t]
+        key = (q, t)
+        self._sequences.setdefault(key, 0)
+        self._sequences[key] += 1
+        return self._sequences[key]
     
     def _write_file(
         self,
@@ -124,6 +144,7 @@ class TurnLogger:
         headers: dict[str, str],
         parts: list[tuple[str, str]],  # [(content_type, body), ...]
         label: str = "",
+        override_query: int | None = None,
         override_turn: int | None = None,
     ) -> Path:
         """Write a MIME multipart-style log file.
@@ -132,22 +153,26 @@ class TurnLogger:
             log_type: File type suffix (thinking, text, plan, exec)
             headers: Key-value pairs for the header block
             parts: List of (content_type, body) tuples
-            label: 30-char description for filename (auto-sanitized)
+            label: 50-char description for filename (auto-sanitized)
+            override_query: If set, log to this query instead of current.
+            override_turn: If set, log to this turn instead of current.
             
         Returns:
             Path to the created file
         """
+        query = override_query if override_query is not None else self._query
         turn = override_turn if override_turn is not None else self._turn
-        seq = self._next_sequence(turn)
-        turn_str = f"{turn:3d}".replace(" ", "_")
-        seq_str = f"{seq:3d}".replace(" ", "_")
+        seq = self._next_sequence(query, turn)
+        query_str = f"{query:02d}"
+        turn_str = f"{turn:02d}"
+        seq_str = f"{seq:02d}"
         
         # Build filename with label
         label_part = _sanitize_label(label)
         if label_part:
-            filename = f"t{turn_str}.{seq_str}.{log_type}.{label_part}.txt"
+            filename = f"q{query_str}.t{turn_str}.s{seq_str}.{log_type}.{label_part}.txt"
         else:
-            filename = f"t{turn_str}.{seq_str}.{log_type}.txt"
+            filename = f"q{query_str}.t{turn_str}.s{seq_str}.{log_type}.txt"
         filepath = self.session_dir / filename
         
         # Ensure directory exists (defensive — create() should have done this)
@@ -157,6 +182,7 @@ class TurnLogger:
         
         lines = [f"Boundary: {boundary}"]
         lines.append(f"Timestamp: {_utcnow()}")
+        lines.append(f"Query: {query}")
         lines.append(f"Turn: {turn}")
         for key, value in headers.items():
             lines.append(f"{key}: {value}")
@@ -230,11 +256,13 @@ class TurnLogger:
         result: Any,
         error: str | None = None,
         label: str = "",
+        override_query: int | None = None,
         override_turn: int | None = None,
     ) -> Path:
         """Log tool execution (input + output/error).
         
         Args:
+            override_query: If set, log to this query instead of current.
             override_turn: If set, log to this turn instead of current.
                           Used to attribute tool results to the requesting turn.
         """
@@ -264,6 +292,7 @@ class TurnLogger:
             headers=headers,
             parts=parts,
             label=label,
+            override_query=override_query,
             override_turn=override_turn,
         )
     
@@ -273,11 +302,11 @@ class TurnLogger:
         return max(self._turn - 1, 1)
     
     @property
+    def current_query(self) -> int:
+        """Current query number."""
+        return self._query
+    
+    @property
     def current_turn(self) -> int:
         """Current turn number."""
         return self._turn
-    
-    @property
-    def current_sequence(self) -> int:
-        """Current sequence number within turn."""
-        return self._sequence

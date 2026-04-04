@@ -147,8 +147,9 @@ class AgentInvoker:
 
         if message_history:
             logger.info(
-                "Resumed session %s (%d messages, %d turns)",
-                session_file.name, len(message_history), session_usage["turns"],
+                "Resumed session %s (%d messages, %d queries)",
+                session_file.name, len(message_history),
+                session_usage.get("queries", session_usage.get("turns", 0)),
             )
         else:
             logger.info("New session %s", session_file.name)
@@ -275,7 +276,7 @@ class AgentInvoker:
             usage = result.usage()
             usage_info = self._extract_usage(usage)
 
-            # Build final usage line (2-line format)
+            # Build final usage line
             usage_line = f"📊 [Usage {format_usage_line(usage)}"
 
             return output, usage_info, usage_line

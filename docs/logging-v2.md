@@ -8,6 +8,19 @@
 
 ## 1. Turn-by-Turn REPL Conversation Logging
 
+### Hierarchy
+
+```
+Session > Query > Turn > Sequence
+```
+
+| Level | Description | Example |
+|-------|-------------|---------|
+| **Session** | One REPL session (folder) | `userid-2026-04-03T07-06-46.230Z/` |
+| **Query** | One user prompt | `q01` |
+| **Turn** | One model request within a query | `t01`, `t02` |
+| **Sequence** | One logged item within a turn | `s01`, `s02` |
+
 ### Goals
 
 - **Human-readable** — No JSON escape hell when inspecting tool I/O
@@ -34,8 +47,8 @@ See `agent/repl.py` for the current implementation.
 |------|------------|----------|-------------|
 | `is_model_request_node` | `ThinkingPart` | `thinking` | Extended thinking content |
 | `is_model_request_node` | `TextPart` | `text` | LLM text response |
-| `is_model_request_node` | `ToolCallPart` | `tool-plan` | Tool calls LLM wants to make |
-| `is_call_tools_node` | `ToolCallPart` | `tool-exec` | Tool execution + results |
+| `is_model_request_node` | `ToolCallPart` | `plan` | Tool calls LLM wants to make |
+| `is_call_tools_node` | `ToolCallPart` | `exec` | Tool execution + results |
 | `is_end_node` | — | (not logged separately) | Turn complete |
 
 This gives us a complete, replayable record of the LLM conversation.
@@ -45,35 +58,39 @@ This gives us a complete, replayable record of the LLM conversation.
 Every LLM output (thinking, text, tool plan, tool exec) gets logged in chronological order:
 
 ```
-{session_dir}/turn{T}.seq{S}.{type}.txt
+{session_dir}/q{QQ}.t{TT}.s{SS}.{type}.txt
 ```
 
 Where:
-- `T` = model request number (matches Usage #N, 3 chars, padded with `_`)
-- `S` = sequence within that request (1-based, 3 chars, padded with `_`)
-- `type` = `thinking` | `text` | `tool-plan` | `tool-exec`
+- `QQ` = query number (user prompt #), 2 digits, zero-padded
+- `TT` = turn number (model request # within query), 2 digits, zero-padded
+- `SS` = sequence within that turn, 2 digits, zero-padded
+- `type` = `thinking` | `text` | `plan` | `exec`
 
 ### Log File Naming
 
 ```
-t{T}.{S}.{type}.{label}.txt
+q{QQ}.t{TT}.s{SS}.{type}.{label}.txt
 ```
 
 | Component | Description |
 |-----------|-------------|
-| `T` | Turn number (model request #), 3 chars, padded with `_` |
-| `S` | Sequence within turn, 3 chars, padded with `_` |
+| `QQ` | Query number (user prompt #), 2 digits, zero-padded |
+| `TT` | Turn number (model request #), 2 digits, zero-padded |
+| `SS` | Sequence within turn, 2 digits, zero-padded |
 | `type` | `thinking`, `text`, `plan`, `exec` |
 | `label` | 50-char description (alphanumeric + `_` only) |
 
 **Examples:**
 ```
-t__1.__1.text.Let_me_help_you_find_that_information.txt
-t__1.__2.plan.execute_command.git_clone_git_gecgithub.txt
-t__1.__3.plan.read_file.agent_repl_py.txt
-t__1.__4.exec.execute_command.git_clone_git_gecgithub.txt
-t__1.__5.exec.read_file.agent_repl_py.txt
-t__2.__1.text.Based_on_the_results_I_found.txt
+q01.t01.s01.text.Let_me_help_you_find_that_information.txt
+q01.t01.s02.plan.execute_command.git_clone_git_gecgithub.txt
+q01.t01.s03.plan.read_file.agent_repl_py.txt
+q01.t01.s04.exec.execute_command.git_clone_git_gecgithub.txt
+q01.t01.s05.exec.read_file.agent_repl_py.txt
+q01.t02.s01.text.Based_on_the_results_I_found.txt
+q02.t01.s01.thinking.Let_me_analyze_the_code.txt
+q02.t01.s02.text.Here_is_what_I_found.txt
 ```
 
 **Label rules:**
@@ -83,11 +100,11 @@ t__2.__1.text.Based_on_the_results_I_found.txt
 - Truncated to 50 chars
 - Auto-generated:
   - text/thinking: from content
-  - tool-plan/tool-exec: `{tool_name}.{args_preview}`
+  - plan/exec: `{tool_name}.{args_preview}`
 
-**Note:** Tool executions (`tool-exec`) are logged under the same turn that requested them.
+**Note:** Tool executions (`exec`) are logged under the same turn that requested them.
 
-Files sort naturally with `ls` — chronological order within and across turns.
+Files sort naturally with `ls` — chronological order within and across queries/turns.
 
 ### File Format
 
@@ -96,9 +113,10 @@ Use MIME multipart-style with a unique boundary per file:
 ```
 Boundary: ----=_Part_7f3a9c2b1d4e8f0a6b2c9d5e3f1a8b7c
 Timestamp: 2026-04-03T07:06:46.230Z
+Query: 1
+Turn: 1
 Tool: read_file
 Call-ID: call_abc123
-Turn: 1
 
 ----=_Part_7f3a9c2b1d4e8f0a6b2c9d5e3f1a8b7c
 Content-Type: input
@@ -121,7 +139,7 @@ def hello():
 ### Format Rules
 
 1. **First line declares boundary** — `Boundary: {boundary}`
-2. **Header block** — Metadata as `Key: Value` lines (Timestamp, Tool, Call-ID, Turn)
+2. **Header block** — Metadata as `Key: Value` lines (Timestamp, Query, Turn, Tool, Call-ID)
 3. **Blank line** — Separates header from parts
 4. **Parts** — Each starts with `{boundary}` on its own line + `Content-Type:` header + blank line + body
 5. **Final boundary** — Ends with `{boundary}--` (trailing `--` signals end)
@@ -146,6 +164,16 @@ Since boundary is declared at top and unique per file, **content can contain any
 - **Human-scannable** — Open in any text editor, instantly readable
 - **Diff-friendly** — Easy to compare tool outputs across sessions
 - **Standard format** — Follows MIME multipart conventions (RFC 2046)
+
+### Console Output Labels
+
+The console uses the same hierarchy in usage labels:
+
+```
+📊 [Usage Query 1 Turn 1] | $0.05 | 1,234 in → 567 out | 2 tools
+📊 [Usage Query 1] | $0.12 | ...    (query-level total)
+📊 [Session 3 queries, 8 reqs] | $0.45 | ...    (session-level total)
+```
 
 ### Edge Cases
 
@@ -177,20 +205,20 @@ Overridable via `ATOM_LOG_DIR` environment variable.
 
 ```
 ~/atom-agentic-ai/logs/
-├── {session_id}/                      # One folder per session
-│   ├── turn__1.seq__1.thinking.txt    # Turn 1: LLM thinking
-│   ├── turn__1.seq__2.text.txt        # Turn 1: LLM text
-│   ├── turn__1.seq__3.tool-plan.txt   # Turn 1: LLM plans tools
-│   ├── turn__1.seq__4.tool-exec.txt   # Turn 1: tool results
-│   ├── turn__2.seq__1.tool-plan.txt   # Turn 2: LLM plans tools
-│   ├── turn__2.seq__2.tool-exec.txt   # Turn 2: tool results
-│   ├── turn__2.seq__3.tool-exec.txt   # Turn 2: more tool results
-│   ├── turn__2.seq__4.text.txt        # Turn 2: LLM text
-│   └── session.json                   # Conversation history + usage
+├── {session_id}/                                      # One folder per session
+│   ├── q01.t01.s01.thinking.txt                       # Query 1, Turn 1: LLM thinking
+│   ├── q01.t01.s02.text.txt                           # Query 1, Turn 1: LLM text
+│   ├── q01.t01.s03.plan.txt                           # Query 1, Turn 1: LLM plans tools
+│   ├── q01.t01.s04.exec.txt                           # Query 1, Turn 1: tool results
+│   ├── q01.t02.s01.plan.txt                           # Query 1, Turn 2: LLM plans tools
+│   ├── q01.t02.s02.exec.txt                           # Query 1, Turn 2: tool results
+│   ├── q01.t02.s03.exec.txt                           # Query 1, Turn 2: more tool results
+│   ├── q01.t02.s04.text.txt                           # Query 1, Turn 2: LLM text
+│   ├── q02.t01.s01.text.txt                           # Query 2, Turn 1: LLM text
+│   └── session.json                                   # Conversation history + usage
 ├── {session_id}/
 │   └── ...
-└── atom.log                           # Rotating diagnostic log (Python logging)
-```
+└── atom.log                                           # Rotating diagnostic log (Python logging)
 ```
 
 ### Session ID Format

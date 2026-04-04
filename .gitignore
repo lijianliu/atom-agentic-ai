@@ -52,3 +52,6 @@ llm-logs/
 *.xls
 *.sqlite
 *.db
+
+# Turn-by-turn conversation logs
+logs/
