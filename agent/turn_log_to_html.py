@@ -153,7 +153,7 @@ def _try_prettify_json(text: str) -> str | None:
     return None
 
 
-_PRETTIFY_JS = """
+_PRETTIFY_JS = r"""
 const _rawCache = {};
 
 function togglePretty(id) {
@@ -163,7 +163,7 @@ function togglePretty(id) {
 
   if (btn.dataset.pretty === '1') {
     el.textContent = _rawCache[id];
-    btn.textContent = '🪄';
+    btn.textContent = 'pretty';
     btn.dataset.pretty = '0';
     return;
   }
@@ -172,8 +172,145 @@ function togglePretty(id) {
   if (jsonStr) {
     el.textContent = jsonStr;
   }
-  btn.textContent = '📄';
+  btn.textContent = 'plain';
   btn.dataset.pretty = '1';
+}
+
+function toggleType(type) {
+  const btn = document.getElementById('toggle-' + type);
+  const isHidden = btn.getAttribute('data-hidden') === '1';
+  const rows = document.querySelectorAll('.row-' + type.toLowerCase());
+  
+  if (isHidden) {
+    rows.forEach(row => row.style.display = '');
+    btn.setAttribute('data-hidden', '0');
+    btn.classList.remove('opacity-30');
+  } else {
+    rows.forEach(row => row.style.display = 'none');
+    btn.setAttribute('data-hidden', '1');
+    btn.classList.add('opacity-30');
+  }
+  filterByText();
+}
+
+function filterByText() {
+  const searchInput = document.getElementById('search-input');
+  const searchText = searchInput.value.toLowerCase();
+  const allRows = document.querySelectorAll('tbody tr');
+  const statusEl = document.getElementById('match-status');
+  
+  // Clear all existing highlights
+  document.querySelectorAll('mark.search-highlight').forEach(mark => {
+    const parent = mark.parentNode;
+    parent.replaceChild(document.createTextNode(mark.textContent), mark);
+    parent.normalize();
+  });
+  
+  let visibleRows = 0;
+  let totalMatches = 0;
+  
+  allRows.forEach(row => {
+    const typeClass = Array.from(row.classList).find(c => c.startsWith('row-'));
+    const type = typeClass ? typeClass.replace('row-', '').toUpperCase() : '';
+    const typeBtn = document.getElementById('toggle-' + type);
+    const typeHidden = typeBtn && typeBtn.getAttribute('data-hidden') === '1';
+    
+    if (typeHidden) {
+      return;
+    }
+    
+    if (!searchText) {
+      row.style.display = '';
+      visibleRows++;
+      return;
+    }
+    
+    // Search in row text content
+    const rowText = row.textContent.toLowerCase();
+    if (rowText.includes(searchText)) {
+      row.style.display = '';
+      visibleRows++;
+      // Count matches in this row
+      const matches = rowText.split(searchText).length - 1;
+      totalMatches += matches;
+    } else {
+      row.style.display = 'none';
+    }
+  });
+  
+  // Highlight matches (limit to first 100)
+  if (searchText && totalMatches > 0) {
+    let highlightCount = 0;
+    const maxHighlights = 100;
+    
+    for (const row of allRows) {
+      if (row.style.display === 'none') continue;
+      if (highlightCount >= maxHighlights) break;
+      
+      highlightCount = highlightText(row, searchText, maxHighlights - highlightCount);
+    }
+    
+    if (totalMatches > maxHighlights) {
+      statusEl.innerHTML = `<span class="text-orange-600 font-semibold">⚠️ ${totalMatches} matches found</span><br><span class="text-xs text-gray-600">Highlighting first ${maxHighlights} only</span>`;
+      statusEl.style.display = 'block';
+    } else {
+      statusEl.innerHTML = `<span class="text-green-600 font-semibold">✓ ${totalMatches} match${totalMatches !== 1 ? 'es' : ''} highlighted</span>`;
+      statusEl.style.display = 'block';
+    }
+  } else if (searchText && totalMatches === 0) {
+    statusEl.innerHTML = '<span class="text-gray-500 text-xs">No matches found</span>';
+    statusEl.style.display = 'block';
+  } else {
+    statusEl.style.display = 'none';
+  }
+}
+
+function highlightText(element, searchText, maxCount) {
+  const walker = document.createTreeWalker(
+    element,
+    NodeFilter.SHOW_TEXT,
+    null,
+    false
+  );
+  
+  const nodesToReplace = [];
+  let node;
+  
+  while (node = walker.nextNode()) {
+    if (node.nodeValue.toLowerCase().includes(searchText)) {
+      nodesToReplace.push(node);
+    }
+  }
+  
+  let highlightCount = 0;
+  
+  for (const node of nodesToReplace) {
+    if (highlightCount >= maxCount) break;
+    
+    const regex = new RegExp('(' + searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    const parts = node.nodeValue.split(regex);
+    const fragment = document.createDocumentFragment();
+    
+    parts.forEach((part, i) => {
+      if (part.toLowerCase() === searchText) {
+        if (highlightCount < maxCount) {
+          const mark = document.createElement('mark');
+          mark.className = 'search-highlight';
+          mark.textContent = part;
+          fragment.appendChild(mark);
+          highlightCount++;
+        } else {
+          fragment.appendChild(document.createTextNode(part));
+        }
+      } else if (part) {
+        fragment.appendChild(document.createTextNode(part));
+      }
+    });
+    
+    node.parentNode.replaceChild(fragment, node);
+  }
+  
+  return highlightCount;
 }
 """
 
@@ -226,14 +363,14 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
             toggle_btn = ""
             if json_data and entry_type != "PLAN":
                 json_attr = f' data-json="{html.escape(json_data, quote=True)}"'
-                toggle_btn = f"""<button onclick="togglePretty('{part_id}')" class="text-[9px] bg-[#0053e2] text-white px-1 py-0.5 rounded cursor-pointer hover:opacity-80 ml-1" id="btn-{part_id}" data-pretty="0">🪄</button>"""
+                toggle_btn = f"""<button onclick="togglePretty('{part_id}')" class="text-[9px] bg-white text-gray-700 border border-gray-300 px-1 py-0.5 rounded cursor-pointer hover:bg-gray-100 ml-1 font-mono" id="btn-{part_id}" data-pretty="0">pretty</button>"""
             else:
                 json_attr = ""
             
             # Build header for this part
             # For TEXT entries, don't show content_type in content
-            # For PLAN, don't show anything (no input label, no pretty button)
-            # For EXEC, show content_type (input/output)
+            # For PLAN, show tool name if available
+            # For EXEC, show tool name once (on first part) + content_type (input/output)
             header_html = ""
             if entry_type == "TEXT" and content_type == "text":
                 # No header, badge is in separate column
@@ -244,13 +381,22 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
   </div>
 """
             elif entry_type == "PLAN":
-                # No header at all for PLAN - clean content only
-                pass
+                # Show tool name for PLAN entries (compact, no prettify button)
+                if tool_name:
+                    header_html = f"""
+  <div class="flex items-center gap-1 mb-1">
+    <span class="text-[9px] font-mono bg-gray-200 px-1.5 py-0.5 rounded font-semibold">{tool_name}</span>
+  </div>
+"""
             elif entry_type == "EXEC":
-                # Show content_type (input/output)
+                # Show tool name on first part, then content_type (input/output)
+                labels_html = ""
+                if part_idx == 0 and tool_name:
+                    labels_html = f'<span class="text-[9px] font-mono bg-gray-200 px-1.5 py-0.5 rounded font-semibold">{tool_name}</span>'
+                labels_html += f'<span class="text-[9px] font-mono bg-gray-200 px-1.5 py-0.5 rounded font-semibold">{content_type}</span>'
                 header_html = f"""
   <div class="flex items-center gap-1 mb-1">
-    <span class="text-[9px] font-mono bg-gray-200 px-1.5 py-0.5 rounded font-semibold">{content_type}</span>
+    {labels_html}
     {toggle_btn}
   </div>
 """
@@ -273,7 +419,7 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
 """
         
         rows_html += f"""
-<tr class="border-b border-gray-200 hover:bg-gray-50">
+<tr class="border-b border-gray-200 hover:bg-gray-50 row-{entry_type.lower()}">
   <td class="pr-1 py-1 text-[9px] text-gray-400 text-right font-mono align-top col-num">{line_num}</td>
   <td class="pl-0 pr-1 py-1 text-[9px] text-gray-400 text-right font-mono align-top col-qts">Q{query}/T{turn}/S{seq}</td>
   <td class="pr-1 py-1 align-top col-type">
@@ -310,9 +456,17 @@ pre {{ margin: 0; line-height: 1.4; }}
 table {{ border-collapse: collapse; table-layout: fixed; width: 100%; }}
 tr:hover {{ background-color: rgba(0, 0, 0, 0.02); }}
 td {{ word-wrap: break-word; overflow-wrap: break-word; }}
+thead {{ position: sticky; top: 0; z-index: 10; }}
+thead tr {{ background-color: #f3f4f6; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
 .col-num {{ width: 25px; white-space: nowrap; }}
 .col-qts {{ width: 55px; white-space: nowrap; }}
 .col-type {{ width: 60px; white-space: nowrap; }}
+.filter-btn {{ cursor: pointer; transition: opacity 0.2s; }}
+.filter-btn:hover {{ opacity: 0.8; }}
+.filter-panel {{ position: fixed; top: 20px; right: 20px; z-index: 100; background: white; border: 2px solid #0053e2; border-radius: 8px; padding: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 200px; }}
+.filter-panel input {{ width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 11px; margin-bottom: 8px; }}
+.filter-panel input:focus {{ outline: none; border-color: #0053e2; }}
+mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2px; border-radius: 2px; font-weight: 600; }}
 </style>
 <script>
 {_PRETTIFY_JS}
@@ -320,6 +474,19 @@ td {{ word-wrap: break-word; overflow-wrap: break-word; }}
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-4">
 <div class="max-w-6xl mx-auto">
+
+<!-- Floating Filter Panel -->
+<div class="filter-panel">
+<div class="text-[10px] font-bold text-gray-700 mb-2">🎯 FILTERS</div>
+<input type="text" id="search-input" placeholder="Search text..." oninput="filterByText()" />
+<div id="match-status" class="text-[9px] mb-2" style="display: none;"></div>
+<div class="flex flex-col gap-1">
+  <button id="toggle-THINKING" onclick="toggleType('THINKING')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-300 text-left">💭 THINKING</button>
+  <button id="toggle-TEXT" onclick="toggleType('TEXT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 text-left">🤖 TEXT</button>
+  <button id="toggle-PLAN" onclick="toggleType('PLAN')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-yellow-100 text-yellow-800 border border-yellow-300 text-left">📋 PLAN</button>
+  <button id="toggle-EXEC" onclick="toggleType('EXEC')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-green-100 text-green-800 border border-green-300 text-left">⚡ EXEC</button>
+</div>
+</div>
 
 <!-- Header -->
 <div class="flex items-center gap-3 border-b-2 border-[#ffc220] pb-3 mb-4">
@@ -331,7 +498,6 @@ td {{ word-wrap: break-word; overflow-wrap: break-word; }}
 </div>
 
 <!-- Table -->
-<div class="overflow-x-auto">
 <table class="w-full border-collapse">
 <thead>
 <tr class="bg-gray-100 border-b-2 border-gray-300">
@@ -345,7 +511,6 @@ td {{ word-wrap: break-word; overflow-wrap: break-word; }}
 {rows_html}
 </tbody>
 </table>
-</div>
 
 <!-- Footer -->
 <div class="mt-6 pt-4 border-t border-gray-300 text-center text-xs text-gray-500">
