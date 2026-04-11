@@ -55,3 +55,7 @@ llm-logs/
 
 # Turn-by-turn conversation logs
 logs/
+
+# Generated HTML reports (can be regenerated from source logs)
+*.html
+!docs/**/*.html
