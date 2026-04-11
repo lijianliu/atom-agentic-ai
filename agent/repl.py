@@ -127,6 +127,7 @@ async def run_repl(
     use_openai: bool = False,
     session_file: Path | None = None,
     root_mode: bool = False,
+    system_prompt: str = "",
 ) -> None:
     """Interactive REPL: read user prompts, stream agent responses, persist sessions."""
     # Skip MCP check in root mode (we're using local tools)
@@ -172,6 +173,45 @@ async def run_repl(
     print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")
 
     async with agent:
+        # Log session metadata after agent is fully initialized
+        try:
+            # Extract available tools from agent
+            tool_names = []
+            
+            # Try different tool storage locations in pydantic-ai Agent
+            if hasattr(agent, '_function_toolset') and agent._function_toolset:
+                # Extract tool names from FunctionToolSet
+                if hasattr(agent._function_toolset, 'tools'):
+                    tool_names = sorted([name for name in agent._function_toolset.tools.keys()])
+                    logger.debug("Extracted %d tools from _function_toolset", len(tool_names))
+            elif hasattr(agent, '_user_toolsets') and agent._user_toolsets:
+                # Try user toolsets
+                for toolset in agent._user_toolsets:
+                    if hasattr(toolset, 'tools'):
+                        tool_names.extend(toolset.tools.keys())
+                tool_names = sorted(set(tool_names))
+                logger.debug("Extracted %d tools from _user_toolsets", len(tool_names))
+            
+            # Get model name
+            model_name = ""
+            if hasattr(agent, 'model'):
+                model_name = str(agent.model) if hasattr(agent.model, '__str__') else type(agent.model).__name__
+            
+            turn_logger.log_session_metadata(
+                model_name=model_name,
+                mcp_url=mcp_url if not root_mode else "N/A",
+                root_mode=root_mode,
+                tools=tool_names if tool_names else None,
+            )
+            
+            if not tool_names:
+                logger.warning(
+                    "No tools extracted from agent (_function_toolset: %s, _user_toolsets: %s)",
+                    hasattr(agent, '_function_toolset'),
+                    hasattr(agent, '_user_toolsets')
+                )
+        except Exception as e:
+            logger.warning("Failed to log session metadata: %s", e, exc_info=True)
         # ── Resolve session file (auto-generate if not specified) ──
         if session_file is None:
             session_file = default_session_path(session_id)
@@ -203,6 +243,11 @@ async def run_repl(
 
             # Start a new query
             turn_logger.start_query()
+            
+            # Log system prompt and user prompt at turn 00
+            if system_prompt:
+                turn_logger.log_system_prompt(system_prompt)
+            turn_logger.log_user_prompt(prompt)
 
             print("⏳ Thinking... (Ctrl+C to cancel)")
             cancelled = False

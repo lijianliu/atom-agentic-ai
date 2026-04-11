@@ -37,8 +37,8 @@ def parse_filename(filename: str) -> dict[str, Any] | None:
         dict with keys: query, turn, sequence, type, label
         or None if filename doesn't match pattern.
     """
-    # q01.t02.s03.exec.tool_name_args.txt
-    pattern = r"^q(\d+)\.t(\d+)\.s(\d+)\.(thinking|text|plan|exec)\.(.+)\.txt$"
+    # q01.t02.s03.exec.tool_name_args.txt or q01.t00.s01.system_prompt.txt
+    pattern = r"^q(\d+)\.t(\d+)\.s(\d+)\.(thinking|text|plan|exec|system_prompt|user_prompt|session_metadata)\.(.+)\.txt$"
     match = re.match(pattern, filename)
     if not match:
         return None
@@ -340,6 +340,9 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
             "TEXT": "bg-blue-100 text-blue-800 border-blue-300",
             "PLAN": "bg-yellow-100 text-yellow-800 border-yellow-300",
             "EXEC": "bg-green-100 text-green-800 border-green-300",
+            "SYSTEM_PROMPT": "bg-gray-100 text-gray-800 border-gray-400",
+            "USER_PROMPT": "bg-cyan-100 text-cyan-800 border-cyan-300",
+            "SESSION_METADATA": "bg-indigo-100 text-indigo-800 border-indigo-300",
         }
         type_color = type_colors.get(entry_type, "bg-gray-100 text-gray-800 border-gray-300")
         
@@ -418,12 +421,19 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
 </div>
 """
         
+        # Display name for type column (shorten long names)
+        type_display_name = {
+            "SYSTEM_PROMPT": "SYS",
+            "USER_PROMPT": "USER",
+            "SESSION_METADATA": "META",
+        }.get(entry_type, entry_type)
+        
         rows_html += f"""
 <tr class="border-b border-gray-200 hover:bg-gray-50 row-{entry_type.lower()}">
   <td class="pr-1 py-1 text-[9px] text-gray-400 text-right font-mono align-top col-num">{line_num}</td>
   <td class="pl-0 pr-1 py-1 text-[9px] text-gray-400 text-right font-mono align-top col-qts">Q{query}/T{turn}/S{seq}</td>
   <td class="pr-1 py-1 align-top col-type">
-    <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold {type_color} border">{entry_type}</span>
+    <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold {type_color} border">{type_display_name}</span>
   </td>
   <td class="px-2 py-1 align-top">
 {content_parts_html}
@@ -436,6 +446,9 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
     text_count = sum(1 for e in entries if e["file_info"]["type"] == "text")
     plan_count = sum(1 for e in entries if e["file_info"]["type"] == "plan")
     exec_count = sum(1 for e in entries if e["file_info"]["type"] == "exec")
+    system_prompt_count = sum(1 for e in entries if e["file_info"]["type"] == "system_prompt")
+    user_prompt_count = sum(1 for e in entries if e["file_info"]["type"] == "user_prompt")
+    session_metadata_count = sum(1 for e in entries if e["file_info"]["type"] == "session_metadata")
     
     # Count unique queries and turns
     queries = set(e["file_info"]["query"] for e in entries)
@@ -485,6 +498,9 @@ mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2p
   <button id="toggle-TEXT" onclick="toggleType('TEXT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 text-left">🤖 TEXT</button>
   <button id="toggle-PLAN" onclick="toggleType('PLAN')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-yellow-100 text-yellow-800 border border-yellow-300 text-left">📋 PLAN</button>
   <button id="toggle-EXEC" onclick="toggleType('EXEC')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-green-100 text-green-800 border border-green-300 text-left">⚡ EXEC</button>
+  <button id="toggle-SESSION_METADATA" onclick="toggleType('SESSION_METADATA')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-300 text-left">⚙️ META</button>
+  <button id="toggle-SYSTEM_PROMPT" onclick="toggleType('SYSTEM_PROMPT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-800 border border-gray-400 text-left">📜 SYS</button>
+  <button id="toggle-USER_PROMPT" onclick="toggleType('USER_PROMPT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-cyan-100 text-cyan-800 border border-cyan-300 text-left">👤 USER</button>
 </div>
 </div>
 
@@ -493,7 +509,7 @@ mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2p
 <h1 class="text-lg font-bold text-[#0053e2]">⚛️  Atom Agentic AI Turn Log: {html.escape(session_name)}</h1>
 <span class="text-xs text-gray-400 ml-auto">
 {line_num} lines · {total_queries} queries · {total_turns} turns · 
-💭{thinking_count} 🤖{text_count} 📋{plan_count} ⚡{exec_count}
+💭{thinking_count} 🤖{text_count} 📋{plan_count} ⚡{exec_count} ⚙️{session_metadata_count} 📜{system_prompt_count} 👤{user_prompt_count}
 </span>
 </div>
 

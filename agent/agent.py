@@ -191,6 +191,10 @@ if __name__ == "__main__":
         "Atom Agent starting (openai=%s, root=%s, mcp_url=%s)",
         args.openai, args.root, args.mcp_url,
     )
+    
+    # Get system prompt before building agent so we can log it
+    system_prompt = get_system_prompt(root_mode=args.root, prompt_file=args.system_prompt)
+    
     agent = build_agent(
         use_openai=args.openai,
         mcp_url=args.mcp_url,
@@ -205,6 +209,7 @@ if __name__ == "__main__":
             use_openai=args.openai,
             session_file=args.session,
             root_mode=args.root,
+            system_prompt=system_prompt,
         ))
     except KeyboardInterrupt:
         print("\n👋 Bye!")

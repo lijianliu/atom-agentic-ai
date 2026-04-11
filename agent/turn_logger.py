@@ -117,6 +117,55 @@ class TurnLogger:
         logger.info("TurnLogger created: %s", session_dir)
         return cls(session_dir)
     
+    def log_session_metadata(
+        self,
+        model_name: str = "",
+        mcp_url: str = "",
+        root_mode: bool = False,
+        tools: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Path:
+        """Log session metadata (model, MCP, tools, etc.) at session start.
+        
+        This is logged as q00.t00.s00.session_metadata.txt
+        """
+        parts = []
+        
+        # Build metadata text
+        metadata_lines = []
+        if model_name:
+            metadata_lines.append(f"Model: {model_name}")
+        metadata_lines.append(f"Mode: {'ROOT' if root_mode else 'SANDBOX'}")
+        if mcp_url and not root_mode:
+            metadata_lines.append(f"MCP URL: {mcp_url}")
+        
+        if tools:
+            metadata_lines.append(f"\nAvailable Tools ({len(tools)}):")
+            for tool in sorted(tools):
+                metadata_lines.append(f"  - {tool}")
+        
+        # Add any extra kwargs
+        if kwargs:
+            metadata_lines.append("\nAdditional Config:")
+            for key, value in sorted(kwargs.items()):
+                metadata_lines.append(f"  {key}: {value}")
+        
+        metadata_text = "\n".join(metadata_lines)
+        parts.append(("text/plain", metadata_text))
+        
+        return self._write_file(
+            log_type="session_metadata",
+            headers={
+                "Model": model_name,
+                "Mode": "ROOT" if root_mode else "SANDBOX",
+                "MCP-URL": mcp_url if mcp_url else "N/A",
+            },
+            parts=parts,
+            label="session_metadata",
+            override_query=0,
+            override_turn=0,
+        )
+    
     def start_query(self) -> None:
         """Start a new query (user prompt). Increments query counter, resets turn."""
         self._query += 1
@@ -294,6 +343,34 @@ class TurnLogger:
             label=label,
             override_query=override_query,
             override_turn=override_turn,
+        )
+    
+    def log_system_prompt(self, content: str, label: str = "system_prompt") -> Path:
+        """Log system prompt at turn 00, sequence 00.
+        
+        Called once per query to capture the system prompt.
+        """
+        return self._write_file(
+            log_type="system_prompt",
+            headers={},
+            parts=[("text/plain", content)],
+            label=label,
+            override_turn=0,
+        )
+    
+    def log_user_prompt(self, content: str, label: str = "") -> Path:
+        """Log user prompt at turn 00.
+        
+        Called once per query to capture the user's input.
+        """
+        if not label and content:
+            label = content[:50]  # Auto-generate from content
+        return self._write_file(
+            log_type="user_prompt",
+            headers={},
+            parts=[("text/plain", content)],
+            label=label,
+            override_turn=0,
         )
     
     @property
