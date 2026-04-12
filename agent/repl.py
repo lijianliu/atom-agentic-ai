@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from pathlib import Path
+from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
@@ -166,7 +167,7 @@ async def run_repl(
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S.%f")[:-3] + "Z"
         session_id = f"{username}-{ts}"
         print(f"   \U0001f194 Session ID: {session_id}")
-    
+
     turn_logger = TurnLogger.create(session_id)
     print(f"   \U0001f4c1 Turn logs: {turn_logger.session_dir}")
 
@@ -176,8 +177,9 @@ async def run_repl(
         # Log session metadata after agent is fully initialized
         try:
             # Extract available tools from agent
+            # Log session metadata after agent is fully initialized
             tool_names = []
-            
+
             # Try different tool storage locations in pydantic-ai Agent
             if hasattr(agent, '_function_toolset') and agent._function_toolset:
                 # Extract tool names from FunctionToolSet
@@ -191,19 +193,19 @@ async def run_repl(
                         tool_names.extend(toolset.tools.keys())
                 tool_names = sorted(set(tool_names))
                 logger.debug("Extracted %d tools from _user_toolsets", len(tool_names))
-            
+
             # Get model name
             model_name = ""
             if hasattr(agent, 'model'):
                 model_name = str(agent.model) if hasattr(agent.model, '__str__') else type(agent.model).__name__
-            
+
             turn_logger.log_session_metadata(
                 model_name=model_name,
                 mcp_url=mcp_url if not root_mode else "N/A",
                 root_mode=root_mode,
                 tools=tool_names if tool_names else None,
             )
-            
+
             if not tool_names:
                 logger.warning(
                     "No tools extracted from agent (_function_toolset: %s, _user_toolsets: %s)",
@@ -225,6 +227,7 @@ async def run_repl(
             print(f"   📊 {format_session_usage(session_usage)}")
         else:
             print(f"   💾 Session: {session_file} (new)")
+
         while True:
             try:
                 prompt = input("\n👤 You: ")
@@ -243,7 +246,7 @@ async def run_repl(
 
             # Start a new query
             turn_logger.start_query()
-            
+
             # Log system prompt and user prompt at turn 00
             if system_prompt:
                 turn_logger.log_system_prompt(system_prompt)
@@ -264,7 +267,6 @@ async def run_repl(
                     try:
                         # Pending tool calls waiting for results
                         pending_tool_calls: list[tuple[str, Any, str]] = []  # [(tool_name, args, call_id), ...]
-                        
                         async for node in run:
                             if Agent.is_model_request_node(node):
                                 # Start a new turn within this query
@@ -292,30 +294,32 @@ async def run_repl(
                                                         })
                                                     pending_tool_calls.remove((tool_name, args, call_id))
                                                     break
-                                
+
                                 # --- Stream the model's response token-by-token ---
                                 tool_args_printed = 0       # chars of tool args emitted
                                 TOOL_ARGS_CAP = 200         # max chars before "…"
                                 # Per-stream accumulators for turn logging
-                                stream_thinking = []
-                                stream_text = []
-                                stream_tool_calls: dict[int, dict] = {}  # part_index -> {tool, args, call_id}
+                                stream_thinking: list[str] = []
+                                stream_text: list[str] = []
+                                stream_tool_calls: dict[int, dict] = {}
                                 current_part_index = -1
-                                
+
                                 async with node.stream(run.ctx) as stream:
                                     async for event in stream:
                                         if isinstance(event, PartStartEvent):
                                             current_part_index = event.index
                                             if isinstance(event.part, ThinkingPart):
                                                 print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
-                                                if event.part.content:
-                                                    print(event.part.content, end="", flush=True)
-                                                    stream_thinking.append(event.part.content)
+                                                content = event.part.content
+                                                if isinstance(content, str) and content:
+                                                    print(content, end="", flush=True)
+                                                    stream_thinking.append(content)
                                             elif isinstance(event.part, TextPart):
                                                 print("\n\033[48;5;22m💬 [Text]\033[0m ", end="", flush=True)
-                                                if event.part.content:
-                                                    print(event.part.content, end="", flush=True)
-                                                    stream_text.append(event.part.content)
+                                                content = event.part.content
+                                                if isinstance(content, str) and content:
+                                                    print(content, end="", flush=True)
+                                                    stream_text.append(content)
                                             elif isinstance(event.part, ToolCallPart):
                                                 tool_args_printed = 0
                                                 args_str = str(event.part.args) if event.part.args else ""
@@ -328,15 +332,21 @@ async def run_repl(
                                                 }
                                         elif isinstance(event, PartDeltaEvent):
                                             if isinstance(event.delta, TextPartDelta):
-                                                print(event.delta.content_delta, end="", flush=True)
-                                                stream_text.append(event.delta.content_delta)
+                                                delta_text = event.delta.content_delta
+                                                if isinstance(delta_text, str) and delta_text:
+                                                    print(delta_text, end="", flush=True)
+                                                    stream_text.append(delta_text)
                                             elif isinstance(event.delta, ThinkingPartDelta):
-                                                if verbose:
-                                                    print(event.delta.content_delta, end="", flush=True)
-                                                stream_thinking.append(event.delta.content_delta)
+                                                delta_text = event.delta.content_delta
+                                                if isinstance(delta_text, str) and delta_text:
+                                                    if verbose:
+                                                        print(delta_text, end="", flush=True)
+                                                    stream_thinking.append(delta_text)
                                             elif isinstance(event.delta, ToolCallPartDelta):
-                                                if tool_args_printed < TOOL_ARGS_CAP:
-                                                    chunk = event.delta.args_delta
+                                                chunk = event.delta.args_delta
+                                                if not isinstance(chunk, str):
+                                                    chunk = ""
+                                                if tool_args_printed < TOOL_ARGS_CAP and chunk:
                                                     remaining = TOOL_ARGS_CAP - tool_args_printed
                                                     if len(chunk) > remaining:
                                                         print(chunk[:remaining] + "…)", flush=True)
@@ -344,14 +354,18 @@ async def run_repl(
                                                         print(chunk, end="", flush=True)
                                                     tool_args_printed += len(chunk)
                                                 # Accumulate full args for logging
-                                                if event.index in stream_tool_calls:
-                                                    stream_tool_calls[event.index]["args"] += event.delta.args_delta
-                                    
-                                    # End of stream — log accumulated content
+                                                if chunk and event.index in stream_tool_calls:
+                                                    stream_tool_calls[event.index]["args"] += chunk
+
+                                    # End of stream — log accumulated content (defensive join)
                                     if stream_thinking:
-                                        turn_logger.log_thinking("".join(stream_thinking))
+                                        turn_logger.log_thinking(
+                                            "".join(s for s in stream_thinking if isinstance(s, str))
+                                        )
                                     if stream_text:
-                                        turn_logger.log_text("".join(stream_text))
+                                        turn_logger.log_text(
+                                            "".join(s for s in stream_text if isinstance(s, str))
+                                        )
                                     for tc in stream_tool_calls.values():
                                         turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
                                     

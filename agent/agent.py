@@ -34,6 +34,7 @@ import readline  # noqa: F401 — enables arrow keys & history in input()
 from pathlib import Path
 
 from pydantic_ai import Agent
+from pydantic_ai.models.anthropic import AnthropicModelSettings
 
 from model import build_model, build_openai_model
 from mcp_helpers import DEFAULT_MCP_URL, build_tcp_mcp_server
@@ -114,12 +115,13 @@ def build_agent(
         else:
             agent = Agent(
                 model=build_model(),
-                model_settings={
-                    "max_tokens": 127_000,
-                    "anthropic_cache_instructions": True,
-                    "anthropic_cache_tool_definitions": True,
-                    "anthropic_cache_messages": True,
-                },
+                model_settings=AnthropicModelSettings(
+                    max_tokens=127_000,
+                    anthropic_thinking={"type": "adaptive"},
+                    anthropic_cache_instructions=True,
+                    anthropic_cache_tool_definitions=True,
+                    anthropic_cache_messages=True,
+                ),
                 system_prompt=prompt,
             )
         register_local_tools(agent)
@@ -138,6 +140,7 @@ def build_agent(
         model=build_model(),
         model_settings={
             "max_tokens": 127_000,
+            "thinking": {"type": "adaptive", "effort": "medium"},  # Adaptive thinking for Claude 4.x
             "anthropic_cache_instructions": True,
             "anthropic_cache_tool_definitions": True,
             "anthropic_cache_messages": True,
