@@ -176,20 +176,109 @@ function togglePretty(id) {
   btn.dataset.pretty = '1';
 }
 
-function toggleType(type) {
-  const btn = document.getElementById('toggle-' + type);
-  const isHidden = btn.getAttribute('data-hidden') === '1';
-  const rows = document.querySelectorAll('.row-' + type.toLowerCase());
+function toggleType(type, rowId) {
+  const allTypes = ['THINKING', 'TEXT', 'PLAN', 'EXEC', 'SESSION_METADATA', 'SYSTEM_PROMPT', 'USER_PROMPT'];
   
-  if (isHidden) {
-    rows.forEach(row => row.style.display = '');
-    btn.setAttribute('data-hidden', '0');
-    btn.classList.remove('opacity-30');
+  // Get all TYPE cells for each type
+  const getTypeCells = (t) => document.querySelectorAll('.type-cell[data-type="' + t + '"]');
+  const getRows = (t) => document.querySelectorAll('.row-' + t.toLowerCase());
+  
+  // Only check types that actually exist in the document
+  const existingTypes = allTypes.filter(t => getTypeCells(t).length > 0);
+  const otherExistingTypes = existingTypes.filter(t => t !== type);
+  
+  // Check if ONLY this type is currently visible (all other existing types are dimmed)
+  const allOtherTypesDimmed = otherExistingTypes.length === 0 || otherExistingTypes.every(t => {
+    const cells = getTypeCells(t);
+    return cells[0].classList.contains('dimmed');
+  });
+  
+  const thisTypeDimmed = getTypeCells(type)[0]?.classList.contains('dimmed') || false;
+  
+  // Clear previous highlights before any action
+  document.querySelectorAll('.row-highlighted').forEach(row => {
+    row.classList.remove('row-highlighted');
+  });
+  
+  if (allOtherTypesDimmed && !thisTypeDimmed) {
+    // This is the only visible type - show all types AND jump to the clicked row
+    showAllTypes();
+    
+    // Jump to and highlight the clicked row (persistent until next TYPE click)
+    const targetRow = document.getElementById(rowId);
+    if (targetRow) {
+      targetRow.scrollIntoView({ behavior: 'auto', block: 'start' });
+      targetRow.classList.add('row-highlighted');
+    }
   } else {
-    rows.forEach(row => row.style.display = 'none');
-    btn.setAttribute('data-hidden', '1');
-    btn.classList.add('opacity-30');
+    // Hide all types except this one, and highlight the clicked row
+    existingTypes.forEach(t => {
+      const checkbox = document.getElementById('check-' + t);
+      if (t === type) {
+        // Show this type
+        getRows(t).forEach(row => row.style.display = '');
+        getTypeCells(t).forEach(cell => cell.classList.remove('dimmed'));
+        if (checkbox) checkbox.checked = true;
+      } else {
+        // Hide and dim other types
+        getRows(t).forEach(row => row.style.display = 'none');
+        getTypeCells(t).forEach(cell => cell.classList.add('dimmed'));
+        if (checkbox) checkbox.checked = false;
+      }
+    });
+    
+    // Show the filter popup
+    document.getElementById('filter-popup').classList.add('visible');
+    
+    // Highlight the clicked row (persistent until next TYPE click)
+    const targetRow = document.getElementById(rowId);
+    if (targetRow) {
+      targetRow.classList.add('row-highlighted');
+    }
   }
+  
+  filterByText();
+}
+
+function toggleTypeFromPopup(type) {
+  const checkbox = document.getElementById('check-' + type);
+  const getTypeCells = (t) => document.querySelectorAll('.type-cell[data-type="' + t + '"]');
+  const getRows = (t) => document.querySelectorAll('.row-' + t.toLowerCase());
+  
+  if (checkbox.checked) {
+    // Show this type
+    getRows(type).forEach(row => row.style.display = '');
+    getTypeCells(type).forEach(cell => cell.classList.remove('dimmed'));
+  } else {
+    // Hide this type
+    getRows(type).forEach(row => row.style.display = 'none');
+    getTypeCells(type).forEach(cell => cell.classList.add('dimmed'));
+  }
+  
+  filterByText();
+}
+
+function showAllTypes() {
+  const allTypes = ['THINKING', 'TEXT', 'PLAN', 'EXEC', 'SESSION_METADATA', 'SYSTEM_PROMPT', 'USER_PROMPT'];
+  const getTypeCells = (t) => document.querySelectorAll('.type-cell[data-type="' + t + '"]');
+  const getRows = (t) => document.querySelectorAll('.row-' + t.toLowerCase());
+  
+  allTypes.forEach(t => {
+    const checkbox = document.getElementById('check-' + t);
+    getRows(t).forEach(row => row.style.display = '');
+    getTypeCells(t).forEach(cell => cell.classList.remove('dimmed'));
+    if (checkbox) checkbox.checked = true;
+  });
+  
+  // Hide the filter popup
+  document.getElementById('filter-popup').classList.remove('visible');
+  
+  // Check if there's a highlighted row and scroll to it
+  const highlightedRow = document.querySelector('.row-highlighted');
+  if (highlightedRow) {
+    highlightedRow.scrollIntoView({ behavior: 'auto', block: 'start' });
+  }
+  
   filterByText();
 }
 
@@ -197,7 +286,6 @@ function filterByText() {
   const searchInput = document.getElementById('search-input');
   const searchText = searchInput.value.toLowerCase();
   const allRows = document.querySelectorAll('tbody tr');
-  const statusEl = document.getElementById('match-status');
   
   // Clear all existing highlights
   document.querySelectorAll('mark.search-highlight').forEach(mark => {
@@ -210,12 +298,12 @@ function filterByText() {
   let totalMatches = 0;
   
   allRows.forEach(row => {
-    const typeClass = Array.from(row.classList).find(c => c.startsWith('row-'));
-    const type = typeClass ? typeClass.replace('row-', '').toUpperCase() : '';
-    const typeBtn = document.getElementById('toggle-' + type);
-    const typeHidden = typeBtn && typeBtn.getAttribute('data-hidden') === '1';
+    // Check if this type is hidden by checking if TYPE cell is dimmed
+    const typeCell = row.querySelector('.type-cell');
+    const typeHidden = typeCell && typeCell.classList.contains('dimmed');
     
     if (typeHidden) {
+      row.style.display = 'none';
       return;
     }
     
@@ -225,7 +313,7 @@ function filterByText() {
       return;
     }
     
-    // Search in row text content
+    // Search in all row text content (all columns)
     const rowText = row.textContent.toLowerCase();
     if (rowText.includes(searchText)) {
       row.style.display = '';
@@ -249,21 +337,9 @@ function filterByText() {
       
       highlightCount = highlightText(row, searchText, maxHighlights - highlightCount);
     }
-    
-    if (totalMatches > maxHighlights) {
-      statusEl.innerHTML = `<span class="text-orange-600 font-semibold">⚠️ ${totalMatches} matches found</span><br><span class="text-xs text-gray-600">Highlighting first ${maxHighlights} only</span>`;
-      statusEl.style.display = 'block';
-    } else {
-      statusEl.innerHTML = `<span class="text-green-600 font-semibold">✓ ${totalMatches} match${totalMatches !== 1 ? 'es' : ''} highlighted</span>`;
-      statusEl.style.display = 'block';
-    }
-  } else if (searchText && totalMatches === 0) {
-    statusEl.innerHTML = '<span class="text-gray-500 text-xs">No matches found</span>';
-    statusEl.style.display = 'block';
-  } else {
-    statusEl.style.display = 'none';
   }
 }
+
 
 function highlightText(element, searchText, maxCount) {
   const walker = document.createTreeWalker(
@@ -405,12 +481,21 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
 """
             else:
                 # Default: show content type + tool if available
-                part_label = f"{content_type}"
-                if part_idx == 0 and tool_name:
-                    part_label += f" ({tool_name})"
-                header_html = f"""
+                # Skip showing "text/plain" or "text" badges (they're redundant)
+                if content_type not in ["text/plain", "text"]:
+                    part_label = f"{content_type}"
+                    if part_idx == 0 and tool_name:
+                        part_label += f" ({tool_name})"
+                    header_html = f"""
   <div class="flex items-center gap-1 mb-1">
     <span class="text-[9px] font-mono bg-gray-200 px-1.5 py-0.5 rounded font-semibold">{part_label}</span>
+    {toggle_btn}
+  </div>
+"""
+                elif toggle_btn:
+                    # Only show toggle button if we have one
+                    header_html = f"""
+  <div class="flex items-center gap-1 mb-1">
     {toggle_btn}
   </div>
 """
@@ -429,11 +514,11 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
         }.get(entry_type, entry_type)
         
         rows_html += f"""
-<tr class="border-b border-gray-200 hover:bg-gray-50 row-{entry_type.lower()}">
+<tr class="border-b border-gray-200 hover:bg-gray-50 row-{entry_type.lower()}" id="row-{line_num}">
   <td class="pr-1 py-1 text-[9px] text-gray-400 text-right font-mono align-top col-num">{line_num}</td>
   <td class="pl-0 pr-1 py-1 text-[9px] text-gray-400 text-right font-mono align-top col-qts">Q{query}/T{turn}/S{seq}</td>
   <td class="pr-1 py-1 align-top col-type">
-    <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold {type_color} border">{type_display_name}</span>
+    <span class="type-cell inline-block px-2 py-0.5 rounded text-[10px] font-bold {type_color} border" data-type="{entry_type}" onclick="toggleType('{entry_type}', 'row-{line_num}')">{type_display_name}</span>
   </td>
   <td class="px-2 py-1 align-top">
 {content_parts_html}
@@ -467,6 +552,7 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
 body {{ font-size: 12px; }}
 pre {{ margin: 0; line-height: 1.4; }}
 table {{ border-collapse: collapse; table-layout: fixed; width: 100%; }}
+tr {{ scroll-margin-top: 60px; }}
 tr:hover {{ background-color: rgba(0, 0, 0, 0.02); }}
 td {{ word-wrap: break-word; overflow-wrap: break-word; }}
 thead {{ position: sticky; top: 0; z-index: 10; }}
@@ -474,35 +560,74 @@ thead tr {{ background-color: #f3f4f6; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
 .col-num {{ width: 25px; white-space: nowrap; }}
 .col-qts {{ width: 55px; white-space: nowrap; }}
 .col-type {{ width: 60px; white-space: nowrap; }}
-.filter-btn {{ cursor: pointer; transition: opacity 0.2s; }}
-.filter-btn:hover {{ opacity: 0.8; }}
-.filter-panel {{ position: fixed; top: 20px; right: 20px; z-index: 100; background: white; border: 2px solid #0053e2; border-radius: 8px; padding: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 200px; }}
-.filter-panel input {{ width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 11px; margin-bottom: 8px; }}
-.filter-panel input:focus {{ outline: none; border-color: #0053e2; }}
+.type-cell {{ cursor: pointer; user-select: none; }}
+.type-cell:hover {{ background-color: rgba(0, 83, 226, 0.1); }}
+.type-cell.dimmed {{ opacity: 0.3; }}
+.content-header {{ position: relative; }}
+.search-input {{ padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 11px; }}
+.search-input:focus {{ outline: none; border-color: #0053e2; }}
 mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2px; border-radius: 2px; font-weight: 600; }}
+/* Subtle row highlights - type-specific colors */
+.row-thinking.row-highlighted {{ background-color: rgba(168, 85, 247, 0.08) !important; }}
+.row-text.row-highlighted {{ background-color: rgba(59, 130, 246, 0.08) !important; }}
+.row-plan.row-highlighted {{ background-color: rgba(234, 179, 8, 0.08) !important; }}
+.row-exec.row-highlighted {{ background-color: rgba(34, 197, 94, 0.08) !important; }}
+.row-session_metadata.row-highlighted {{ background-color: rgba(99, 102, 241, 0.08) !important; }}
+.row-system_prompt.row-highlighted {{ background-color: rgba(107, 114, 128, 0.08) !important; }}
+.row-user_prompt.row-highlighted {{ background-color: rgba(6, 182, 212, 0.08) !important; }}
+/* Filter popup */
+#filter-popup {{ position: fixed; top: 20px; right: 20px; z-index: 100; background: white; border: 2px solid #0053e2; border-radius: 8px; padding: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 220px; display: none; }}
+#filter-popup.visible {{ display: block; }}
+.filter-toggle {{ display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 2px 0; border-radius: 4px; cursor: pointer; user-select: none; }}
+.filter-toggle:hover {{ background-color: rgba(0, 83, 226, 0.05); }}
+.filter-toggle input[type="checkbox"] {{ cursor: pointer; width: 16px; height: 16px; }}
+.filter-toggle label {{ cursor: pointer; flex: 1; font-size: 11px; font-weight: 600; }}
 </style>
 <script>
 {_PRETTIFY_JS}
 </script>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-4">
-<div class="max-w-6xl mx-auto">
 
-<!-- Floating Filter Panel -->
-<div class="filter-panel">
-<div class="text-[10px] font-bold text-gray-700 mb-2">🎯 FILTERS</div>
-<input type="text" id="search-input" placeholder="Search text..." oninput="filterByText()" />
-<div id="match-status" class="text-[9px] mb-2" style="display: none;"></div>
-<div class="flex flex-col gap-1">
-  <button id="toggle-THINKING" onclick="toggleType('THINKING')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-300 text-left">💭 THINKING</button>
-  <button id="toggle-TEXT" onclick="toggleType('TEXT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 text-left">🤖 TEXT</button>
-  <button id="toggle-PLAN" onclick="toggleType('PLAN')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-yellow-100 text-yellow-800 border border-yellow-300 text-left">📋 PLAN</button>
-  <button id="toggle-EXEC" onclick="toggleType('EXEC')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-green-100 text-green-800 border border-green-300 text-left">⚡ EXEC</button>
-  <button id="toggle-SESSION_METADATA" onclick="toggleType('SESSION_METADATA')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-300 text-left">⚙️ META</button>
-  <button id="toggle-SYSTEM_PROMPT" onclick="toggleType('SYSTEM_PROMPT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-800 border border-gray-400 text-left">📜 SYS</button>
-  <button id="toggle-USER_PROMPT" onclick="toggleType('USER_PROMPT')" data-hidden="0" class="filter-btn inline-block px-2 py-1 rounded text-[10px] font-bold bg-cyan-100 text-cyan-800 border border-cyan-300 text-left">👤 USER</button>
+<!-- Filter Popup (shown when types are filtered) -->
+<div id="filter-popup">
+  <div class="flex items-center justify-between mb-2">
+    <div class="text-[11px] font-bold text-gray-700">🎯 Filter Types</div>
+    <button onclick="showAllTypes()" class="text-[9px] text-blue-600 hover:text-blue-800 underline">Show All</button>
+  </div>
+  <div id="filter-checkboxes">
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-SESSION_METADATA" onchange="toggleTypeFromPopup('SESSION_METADATA')" checked />
+      <label for="check-SESSION_METADATA" class="text-indigo-800">⚙️ META ({session_metadata_count})</label>
+    </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-SYSTEM_PROMPT" onchange="toggleTypeFromPopup('SYSTEM_PROMPT')" checked />
+      <label for="check-SYSTEM_PROMPT" class="text-gray-800">📜 SYS ({system_prompt_count})</label>
+    </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-USER_PROMPT" onchange="toggleTypeFromPopup('USER_PROMPT')" checked />
+      <label for="check-USER_PROMPT" class="text-cyan-800">👤 USER ({user_prompt_count})</label>
+    </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-TEXT" onchange="toggleTypeFromPopup('TEXT')" checked />
+      <label for="check-TEXT" class="text-blue-800">🤖 TEXT ({text_count})</label>
+    </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-PLAN" onchange="toggleTypeFromPopup('PLAN')" checked />
+      <label for="check-PLAN" class="text-yellow-800">📋 PLAN ({plan_count})</label>
+    </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-EXEC" onchange="toggleTypeFromPopup('EXEC')" checked />
+      <label for="check-EXEC" class="text-green-800">⚡ EXEC ({exec_count})</label>
+    </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-THINKING" onchange="toggleTypeFromPopup('THINKING')" checked />
+      <label for="check-THINKING" class="text-purple-800">💭 THINKING ({thinking_count})</label>
+    </div>
+  </div>
 </div>
-</div>
+
+<div class="max-w-6xl mx-auto">
 
 <!-- Header -->
 <div class="flex items-center gap-3 border-b-2 border-[#ffc220] pb-3 mb-4">
@@ -520,7 +645,12 @@ mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2p
   <th class="pr-1 py-1 text-right text-[10px] font-bold text-gray-700 col-num">#</th>
   <th class="pl-0 pr-1 py-1 text-center text-[10px] font-bold text-gray-700 col-qts">Q/T/S</th>
   <th class="pr-1 py-1 text-left text-[10px] font-bold text-gray-700 col-type">TYPE</th>
-  <th class="px-2 py-1 text-left text-[10px] font-bold text-gray-700">CONTENT</th>
+  <th class="px-2 py-1 text-left text-[10px] font-bold text-gray-700 content-header">
+    <div class="flex items-center gap-2">
+      <span>CONTENT</span>
+      <input type="text" id="search-input" class="search-input flex-1" placeholder="Search all columns..." oninput="filterByText()" />
+    </div>
+  </th>
 </tr>
 </thead>
 <tbody>

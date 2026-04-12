@@ -130,7 +130,7 @@ gs://<bucket>/<prefix>/<YYYY-MM-DD>/<session-uuid>.jsonl
 
 Example:
 ```
-gs://hubble-ui/lijian-atom-audit-logging/ATOM_LOG_/2026-03-28/1aee8756-...jsonl
+gs://lijian-atom-audit-logging/ATOM_LOG_/2026-03-28/1aee8756-...jsonl
 ```
 
 ### Authentication
