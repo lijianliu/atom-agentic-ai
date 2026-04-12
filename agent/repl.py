@@ -303,11 +303,24 @@ async def run_repl(
                                 stream_text: list[str] = []
                                 stream_tool_calls: dict[int, dict] = {}
                                 current_part_index = -1
+                                tool_args_printed = 0
+                                tool_call_open = False  # Track if we have an unclosed tool call paren
 
                                 async with node.stream(run.ctx) as stream:
                                     async for event in stream:
                                         if isinstance(event, PartStartEvent):
+                                            # Close previous tool call if still open
+                                            if tool_call_open:
+                                                print(")", flush=True)
+                                                tool_call_open = False
+                                            # Clear streaming counter if switching from a capped tool call
+                                            if tool_args_printed >= TOOL_ARGS_CAP:
+                                                kb = tool_args_printed / 1024
+                                                print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
+                                            
                                             current_part_index = event.index
+                                            tool_args_printed = 0  # Reset for new part
+                                            
                                             if isinstance(event.part, ThinkingPart):
                                                 print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
                                                 content = event.part.content
@@ -321,10 +334,20 @@ async def run_repl(
                                                     print(content, end="", flush=True)
                                                     stream_text.append(content)
                                             elif isinstance(event.part, ToolCallPart):
-                                                tool_args_printed = 0
                                                 args_str = str(event.part.args) if event.part.args else ""
-                                                print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}({args_str}", end="", flush=True)
-                                                tool_args_printed += len(args_str)
+                                                print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}(", end="", flush=True)
+                                                # Apply TOOL_ARGS_CAP to initial args
+                                                if args_str:
+                                                    if len(args_str) > TOOL_ARGS_CAP:
+                                                        print(f"{args_str[:TOOL_ARGS_CAP]}…)", flush=True)
+                                                        tool_args_printed = TOOL_ARGS_CAP
+                                                        tool_call_open = False  # Closed with truncation
+                                                    else:
+                                                        print(args_str, end="", flush=True)
+                                                        tool_args_printed = len(args_str)
+                                                        tool_call_open = True  # Still open, may get deltas
+                                                else:
+                                                    tool_call_open = True  # Empty args, waiting for deltas
                                                 stream_tool_calls[current_part_index] = {
                                                     "tool": event.part.tool_name,
                                                     "args": args_str,
@@ -339,8 +362,7 @@ async def run_repl(
                                             elif isinstance(event.delta, ThinkingPartDelta):
                                                 delta_text = event.delta.content_delta
                                                 if isinstance(delta_text, str) and delta_text:
-                                                    if verbose:
-                                                        print(delta_text, end="", flush=True)
+                                                    print(delta_text, end="", flush=True)
                                                     stream_thinking.append(delta_text)
                                             elif isinstance(event.delta, ToolCallPartDelta):
                                                 chunk = event.delta.args_delta
@@ -350,13 +372,28 @@ async def run_repl(
                                                     remaining = TOOL_ARGS_CAP - tool_args_printed
                                                     if len(chunk) > remaining:
                                                         print(chunk[:remaining] + "…)", flush=True)
+                                                        tool_call_open = False
                                                     else:
                                                         print(chunk, end="", flush=True)
-                                                    tool_args_printed += len(chunk)
+                                                tool_args_printed += len(chunk) if chunk else 0
+                                                # Show live byte counter after cap is reached
+                                                if tool_args_printed >= TOOL_ARGS_CAP and chunk:
+                                                    kb = tool_args_printed / 1024
+                                                    print(f"\r\033[K  \u23f3 streaming\u2026 {kb:.1f}KB", end="", flush=True)
                                                 # Accumulate full args for logging
                                                 if chunk and event.index in stream_tool_calls:
                                                     stream_tool_calls[event.index]["args"] += chunk
 
+                                    # Close any unclosed tool call paren
+                                    if tool_call_open:
+                                        print(")", flush=True)
+                                        tool_call_open = False
+                                    # Clear streaming counter line if we were past the cap
+                                    if tool_args_printed >= TOOL_ARGS_CAP:
+                                        kb = tool_args_printed / 1024
+                                        print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
+                                        tool_args_printed = 0
+                                    
                                     # End of stream — log accumulated content (defensive join)
                                     if stream_thinking:
                                         turn_logger.log_thinking(

@@ -118,6 +118,7 @@ def build_agent(
                 model_settings=AnthropicModelSettings(
                     max_tokens=127_000,
                     anthropic_thinking={"type": "adaptive"},
+                    anthropic_betas=["fine-grained-tool-streaming-2025-05-14"],
                     anthropic_cache_instructions=True,
                     anthropic_cache_tool_definitions=True,
                     anthropic_cache_messages=True,
@@ -138,13 +139,14 @@ def build_agent(
         )
     return Agent(
         model=build_model(),
-        model_settings={
-            "max_tokens": 127_000,
-            "thinking": {"type": "adaptive", "effort": "medium"},  # Adaptive thinking for Claude 4.x
-            "anthropic_cache_instructions": True,
-            "anthropic_cache_tool_definitions": True,
-            "anthropic_cache_messages": True,
-        },
+        model_settings=AnthropicModelSettings(
+            max_tokens=127_000,
+            anthropic_thinking={"type": "adaptive"},
+            anthropic_betas=["fine-grained-tool-streaming-2025-05-14"],
+            anthropic_cache_instructions=True,
+            anthropic_cache_tool_definitions=True,
+            anthropic_cache_messages=True,
+        ),
         system_prompt=prompt,
         mcp_servers=[mcp_server],
     )
