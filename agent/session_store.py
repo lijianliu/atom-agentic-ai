@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelResponse, ThinkingPart
 
 from logging_config import LOG_DIR
 
@@ -48,6 +48,29 @@ def default_session_path(session_id: str | None = None) -> Path:
     else:
         name = session_id
     return _SESSIONS_DIR / f"{name}.session.json"
+
+
+def _strip_thinking_parts(history: list) -> int:
+    """Remove ThinkingPart blocks from ModelResponse messages in history.
+
+    Thinking blocks carry a ``signature`` that the Anthropic API validates
+    on subsequent requests.  When a session is serialised to disk and
+    resumed later, these signatures become stale/invalid, causing:
+
+        Invalid `signature` in `thinking` block
+
+    Thinking parts are only for transparency — they are NOT required for
+    the model to continue the conversation, so stripping them is safe.
+
+    Returns the number of thinking parts removed.
+    """
+    removed = 0
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            original_len = len(msg.parts)
+            msg.parts = [p for p in msg.parts if not isinstance(p, ThinkingPart)]
+            removed += original_len - len(msg.parts)
+    return removed
 
 
 def save_session(
@@ -97,6 +120,15 @@ def load_session(
         # Deserialise messages via pydantic-ai's type adapter
         messages_raw = json.dumps(envelope["messages"]).encode()
         history = list(ModelMessagesTypeAdapter.validate_json(messages_raw))
+
+        # Strip thinking parts to avoid "Invalid signature in thinking
+        # block" errors when the session is resumed.  Signatures are
+        # only valid for the request that produced them.
+        stripped = _strip_thinking_parts(history)
+        if stripped:
+            logger.info(
+                "Stripped %d stale thinking parts from loaded session", stripped
+            )
 
         # Restore usage (merge with defaults so new keys are covered)
         usage = new_session_usage()

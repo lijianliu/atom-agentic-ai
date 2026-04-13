@@ -63,6 +63,23 @@ def _sanitize_history(history: list) -> None:
     the history at that point (everything from the broken pair onward
     is discarded).
     """
+    # ── Strip stale ThinkingPart blocks ──────────────────────────────
+    # Thinking parts carry a ``signature`` that the Anthropic API
+    # validates on subsequent requests.  After serialisation (or even
+    # across turns within the same session), signatures can become
+    # invalid, causing "Invalid `signature` in `thinking` block".
+    # Thinking parts are NOT needed for the conversation to continue.
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            original_len = len(msg.parts)
+            msg.parts = [p for p in msg.parts if not isinstance(p, ThinkingPart)]
+            stripped = original_len - len(msg.parts)
+            if stripped:
+                logger.debug(
+                    "Sanitized history: stripped %d thinking parts from ModelResponse",
+                    stripped,
+                )
+
     truncate_at: int | None = None
 
     for i, msg in enumerate(history):
