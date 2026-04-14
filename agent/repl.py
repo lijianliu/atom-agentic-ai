@@ -11,7 +11,9 @@ the REPL orchestration.
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,11 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import ANSI
+
 from gcs_audit_logger import GCSLogger
 from logging_config import get_logger, LOG_FILE_PATH
 from session_store import save_session, load_session, default_session_path
@@ -44,6 +51,35 @@ from usage_helpers import (
 from mcp_helpers import check_mcp_reachable
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Multi-line paste-aware input  (prompt_toolkit + bracketed paste)
+# ---------------------------------------------------------------------------
+
+_bindings = KeyBindings()
+
+@_bindings.add('enter')
+def _submit(event):
+    # A *typed* Enter submits the buffer.
+    # Pasted newlines don't go through this binding (bracketed paste
+    # inserts them directly), so multi-line pastes are preserved.
+    event.current_buffer.validate_and_handle()
+
+_session = PromptSession(
+    history=InMemoryHistory(),
+    multiline=True,
+    key_bindings=_bindings,
+    enable_history_search=True,
+)
+
+
+async def _read_multiline_input(prompt: str = "") -> str:
+    """Read user input with paste-friendly multiline support (async)."""
+    return await _session.prompt_async(
+        ANSI(prompt),
+        prompt_continuation=lambda width, line_number, is_soft_wrap: '',
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +214,7 @@ async def run_repl(
         session_id = gcs_audit_logger.session_id
     else:
         import getpass
-        import os
+
         from datetime import datetime, timezone
         username = os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser() or "unknown"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S.%f")[:-3] + "Z"
@@ -247,7 +283,7 @@ async def run_repl(
 
         while True:
             try:
-                prompt = input("\n👤 You: ")
+                prompt = await _read_multiline_input("\n👤 You: ")
             except (KeyboardInterrupt, EOFError):
                 print("  (interrupted)")
                 continue
