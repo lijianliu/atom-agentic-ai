@@ -283,7 +283,7 @@ async def run_repl(
 
         while True:
             try:
-                prompt = await _read_multiline_input("\n👤 You: ")
+                prompt = await _read_multiline_input("\033[30;48;5;226m\n👤 You: \033[0m ")
             except (KeyboardInterrupt, EOFError):
                 print("  (interrupted)")
                 continue
@@ -339,7 +339,7 @@ async def run_repl(
                                                         override_turn=turn_logger.previous_turn,
                                                     )
                                                     args_str = str(args)[:200] if args else ""
-                                                    print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
+                                                    print(f"\033[97;48;5;166m⚙️ [Tool Exec - End]\033[0m {tool_name}({args_str})")
                                                     if gcs_audit_logger:
                                                         await gcs_audit_logger.log("tool_call", {
                                                             "tool": tool_name,
@@ -471,6 +471,11 @@ async def run_repl(
                                             part.args,
                                             part.tool_call_id,
                                         ))
+                                        args_str = str(part.args)[:200] if part.args else ""
+                                        print(
+                                            f"\033[97;48;5;172m⚙️ [Tool Exec - Start]\033[0m {part.tool_name}({args_str})",
+                                            flush=True,
+                                        )
                             elif Agent.is_end_node(node):
                                 # Flush any remaining pending tool calls
                                 if pending_tool_calls:
