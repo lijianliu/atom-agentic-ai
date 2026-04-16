@@ -338,7 +338,7 @@ async def run_repl(
                                                         override_query=turn_logger.current_query,
                                                         override_turn=turn_logger.previous_turn,
                                                     )
-                                                    args_str = str(args)[:200] if args else ""
+                                                    args_str = str(args)[:1000] if args else ""
                                                     print(f"\033[97;48;5;166m⚙️ [Tool Exec - End]\033[0m {tool_name}({args_str})")
                                                     if gcs_audit_logger:
                                                         await gcs_audit_logger.log("tool_call", {
@@ -471,7 +471,7 @@ async def run_repl(
                                             part.args,
                                             part.tool_call_id,
                                         ))
-                                        args_str = str(part.args)[:200] if part.args else ""
+                                        args_str = str(part.args)[:1000] if part.args else ""
                                         print(
                                             f"\033[97;48;5;172m⚙️ [Tool Exec - Start]\033[0m {part.tool_name}({args_str})",
                                             flush=True,
@@ -496,7 +496,7 @@ async def run_repl(
                                                                     result=part.content,
                                                                 )
                                                                 # Print to console
-                                                                args_str = str(args)[:200] if args else ""
+                                                                args_str = str(args)[:1000] if args else ""
                                                                 print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
                                                                 # Log to GCS
                                                                 if gcs_audit_logger:
@@ -509,7 +509,7 @@ async def run_repl(
                                     except Exception:
                                         pass
                                 if verbose:
-                                    print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:200]}")
+                                    print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:1000]}")
 
                     except asyncio.CancelledError:
                         cancelled = True
