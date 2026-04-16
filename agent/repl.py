@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import sys
+import anyio
 from pathlib import Path
 from typing import Any
 
@@ -533,6 +533,15 @@ async def run_repl(
             loop.add_signal_handler(signal.SIGINT, _cancel, None)
             try:
                 await task
+            except anyio.ClosedResourceError:
+                # Ctrl-C during tool execution can cause pydantic_graph / anyio
+                # cleanup to close an internal memory stream while graph tasks
+                # are still unwinding.  Treat that as a normal cancellation
+                # path and return control to the REPL instead of exiting.
+                cancelled = True
+                logger.info(
+                    "Suppressed anyio.ClosedResourceError during cancellation; returning to REPL"
+                )
             except asyncio.CancelledError:
                 pass
             finally:
