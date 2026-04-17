@@ -312,6 +312,9 @@ async def run_repl(
             async def _run() -> None:
                 nonlocal cancelled
 
+                # Strip stale thinking signatures before every API call
+                _sanitize_history(message_history)
+
                 async with agent.iter(
                     prompt,
                     message_history=message_history,
