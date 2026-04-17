@@ -59,6 +59,10 @@ TOKEN_TTL_SECONDS = 25 * 60   # re-fetch gcloud token after 25 minutes
 ENV_PATH = "ATOM_AUDIT_LOG_GCS_PATH"
 PROMPT_SLUG_MAX = 50          # max chars in the prompt portion of the filename
 
+FETCH_TOKEN_TIMEOUT = 60      # seconds to wait for gcloud auth command
+FETCH_TOKEN_MAX_RETRIES = 3   # number of attempts before giving up
+FETCH_TOKEN_RETRY_BACKOFF = 2 # base seconds for exponential backoff
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -403,16 +407,39 @@ class GCSClientFactory:
 
     @staticmethod
     def _fetch_token() -> str:
-        """Shell out to ``gcloud auth print-access-token``."""
-        tok = subprocess.check_output(
-            ["gcloud", "auth", "print-access-token"],
-            encoding="utf-8",
-            timeout=10,
-        ).strip()
-        if not tok:
-            raise RuntimeError("gcloud auth print-access-token returned empty")
-        logger.debug("Fetched fresh gcloud access token (%d chars)", len(tok))
-        return tok
+        """Shell out to ``gcloud auth print-access-token``.
+
+        Retries up to ``FETCH_TOKEN_MAX_RETRIES`` times with exponential
+        backoff on ``TimeoutExpired`` or ``CalledProcessError``.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, FETCH_TOKEN_MAX_RETRIES + 1):
+            try:
+                tok = subprocess.check_output(
+                    ["gcloud", "auth", "print-access-token"],
+                    encoding="utf-8",
+                    timeout=FETCH_TOKEN_TIMEOUT,
+                ).strip()
+                if not tok:
+                    raise RuntimeError("gcloud auth print-access-token returned empty")
+                logger.debug("Fetched fresh gcloud access token (%d chars)", len(tok))
+                return tok
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                last_exc = exc
+                if attempt < FETCH_TOKEN_MAX_RETRIES:
+                    backoff = FETCH_TOKEN_RETRY_BACKOFF ** attempt
+                    logger.warning(
+                        "GCSLogger: gcloud token fetch attempt %d/%d failed (%s), "
+                        "retrying in %ds ...",
+                        attempt, FETCH_TOKEN_MAX_RETRIES, exc, backoff,
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error(
+                        "GCSLogger: gcloud token fetch failed after %d attempts",
+                        FETCH_TOKEN_MAX_RETRIES,
+                    )
+        raise last_exc  # type: ignore[misc]
 
     @classmethod
     def _build_client(cls) -> _gcs.Client:
