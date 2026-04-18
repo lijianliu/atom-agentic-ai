@@ -63,7 +63,7 @@ logger = get_logger(__name__)
 # History processor: ThinkingPart stripping before every API call
 # ---------------------------------------------------------------------------
 
-_STRIP_ALL_THINKING = os.environ.get("STRIP_ALL_THINKING") == "1"
+_STRIP_ALL_THINKING = os.environ.get("STRIP_ALL_THINKING", "1") != "0"
 
 
 def strip_thinking_blocks(messages: list[ModelMessage]) -> list[ModelMessage]:

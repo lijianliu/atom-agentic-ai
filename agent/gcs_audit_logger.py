@@ -47,6 +47,7 @@ logger = get_logger(__name__)
 try:
     from google.cloud import storage as _gcs  # type: ignore[import]
     from google.oauth2.credentials import Credentials as _TokenCredentials  # type: ignore[import]
+    from google.auth.credentials import Credentials as _BaseCredentials  # type: ignore[import]
     _GCS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _GCS_AVAILABLE = False
@@ -140,6 +141,42 @@ def _content_type_for_path(filepath: Any) -> str:
     except AttributeError:
         suffix = ""
     return _CONTENT_TYPE_MAP.get(suffix, _DEFAULT_CONTENT_TYPE)
+
+
+# ---------------------------------------------------------------------------
+# GCloud-backed credentials (self-refreshing via gcloud CLI)
+# ---------------------------------------------------------------------------
+
+if _GCS_AVAILABLE:
+    class _GCloudCredentials(_BaseCredentials):
+        """Custom credentials that refresh via ``gcloud auth print-access-token``.
+
+        The default ``google.oauth2.credentials.Credentials`` requires
+        ``refresh_token``, ``token_uri``, ``client_id``, and ``client_secret``
+        to refresh.  Since we obtain tokens from the gcloud CLI, we override
+        ``refresh()`` to shell out to gcloud instead.
+        """
+
+        def __init__(self, token: str) -> None:
+            super().__init__()
+            self.token = token
+            self.expiry = None  # let the transport handle 401 → refresh
+
+        def refresh(self, request: Any) -> None:
+            """Re-fetch the access token via ``gcloud auth print-access-token``."""
+            logger.info(
+                "GCS_AUTH _GCloudCredentials.refresh() called, "
+                "re-fetching token via gcloud CLI, thread=%s",
+                threading.current_thread().name,
+            )
+            self.token = GCSClientFactory._fetch_token()
+            # No expiry set — the factory's TTL handles proactive refresh;
+            # this is the safety net for mid-request 401s.
+
+        @property
+        def valid(self) -> bool:
+            """Token is valid if it's non-empty."""
+            return bool(self.token)
 
 
 # ---------------------------------------------------------------------------
@@ -537,8 +574,13 @@ class GCSClientFactory:
 
     @classmethod
     def _build_client(cls) -> _gcs.Client:
-        """Create a new GCS client with a fresh access token."""
-        credentials = _TokenCredentials(cls._fetch_token())
+        """Create a new GCS client with a fresh access token.
+
+        Uses ``_GCloudCredentials`` — a custom credentials class that
+        overrides ``refresh()`` to re-fetch the token via ``gcloud CLI``
+        instead of requiring OAuth2 refresh_token / client_id / client_secret.
+        """
+        credentials = _GCloudCredentials(cls._fetch_token())
         return _gcs.Client(credentials=credentials)
 
 
