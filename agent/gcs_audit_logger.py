@@ -63,6 +63,15 @@ FETCH_TOKEN_TIMEOUT = 60      # seconds to wait for gcloud auth command
 FETCH_TOKEN_MAX_RETRIES = 3   # number of attempts before giving up
 FETCH_TOKEN_RETRY_BACKOFF = 2 # base seconds for exponential backoff
 
+# Content-type mapping for uploaded turn-log files
+_CONTENT_TYPE_MAP = {
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".json": "application/json",
+    ".jsonl": "application/jsonl",
+}
+_DEFAULT_CONTENT_TYPE = "text/plain"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -124,6 +133,15 @@ def _slugify_prompt(text: str, max_len: int = PROMPT_SLUG_MAX) -> str:
     return slug or "prompt"
 
 
+def _content_type_for_path(filepath: Any) -> str:
+    """Return the Content-Type for a file based on its suffix."""
+    try:
+        suffix = filepath.suffix.lower()
+    except AttributeError:
+        suffix = ""
+    return _CONTENT_TYPE_MAP.get(suffix, _DEFAULT_CONTENT_TYPE)
+
+
 # ---------------------------------------------------------------------------
 # Null logger (no-op stand-in when GCS is not configured)
 # ---------------------------------------------------------------------------
@@ -132,7 +150,8 @@ class NullGCSLogger:
     """No-op logger used when GCS is not configured."""
 
     def upload_turn_log(self, filepath, content):
-        pass
+        """No-op upload — always returns ``None``."""
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -374,14 +393,17 @@ class GCSLogger:
             parts.insert(0, self.prefix)
         return "/".join(parts)
 
-    def upload_turn_log(self, filepath: "Path", content: str) -> None:
+    def upload_turn_log(self, filepath: "Path", content: str) -> str | None:
         """Upload a turn log file to GCS (fire-and-forget).
 
         Mirrors the local turn-log directory structure into the same
-        GCS prefix used by this logger.
+        GCS prefix used by this logger.  Content-Type is auto-detected
+        from the file extension (``.html`` → ``text/html``, etc.).
+
+        Returns the ``gs://`` URI on success, or ``None`` on skip/failure.
         """
         if not _GCS_AVAILABLE:
-            return
+            return None
         try:
             from logging_config import LOG_DIR
             relative = filepath.relative_to(LOG_DIR)
@@ -389,13 +411,17 @@ class GCSLogger:
                 blob_path = f"{self.prefix}/{relative}"
             else:
                 blob_path = str(relative)
+            content_type = _content_type_for_path(filepath)
             client = _gcs_client_factory.get_client()
             bucket = client.bucket(self.bucket_name)
             blob = bucket.blob(blob_path)
-            blob.upload_from_string(content, content_type="text/plain")
-            logger.debug("GCS turn-log uploaded gs://%s/%s", self.bucket_name, blob_path)
+            blob.upload_from_string(content, content_type=content_type)
+            gcs_uri = f"gs://{self.bucket_name}/{blob_path}"
+            logger.debug("GCS turn-log uploaded %s (%s)", gcs_uri, content_type)
+            return gcs_uri
         except Exception as exc:  # noqa: BLE001
             logger.warning("GCS turn-log upload failed for %s: %s", filepath.name, exc)
+            return None
 
     def _write_blob(self, blob_path: str, lines: list[str]) -> None:
         """Sync GCS upload — runs inside a thread-pool executor."""

@@ -270,6 +270,38 @@ def _print_stream_connection_error(exc: BaseException) -> None:
     )
 
 
+def _gcs_uri_to_web_url(gcs_uri: str) -> str | None:
+    """Convert a ``gs://`` URI to a web URL using environment variables.
+
+    Uses two environment variables:
+        ATOM_LOG_URL_PREFIX     — The web URL prefix, e.g.
+                                  ``atom.company.com/ext/atom-agentic-ui``
+        ATOM_LOG_URL_GCS_PREFIX — The GCS path prefix to strip, e.g.
+                                  ``gs://my-bucket/my-folder``
+
+    Example:
+        gcs_uri  = "gs://my-bucket/my-folder/2026-04-18/jdoe/17-32-28.060Z/session.html"
+        gcs_pfx  = "gs://my-bucket/my-folder"
+        web_pfx  = "atom.company.com/ext/atom-agentic-ui"
+        result   = "atom.company.com/ext/atom-agentic-ui/2026-04-18/jdoe/17-32-28.060Z/session.html"
+
+    Returns ``None`` if either env var is unset or the GCS URI doesn't
+    start with the expected GCS prefix.
+    """
+    web_prefix = os.environ.get("ATOM_LOG_URL_PREFIX", "").strip().rstrip("/")
+    gcs_prefix = os.environ.get("ATOM_LOG_URL_GCS_PREFIX", "").strip().rstrip("/")
+    if not web_prefix or not gcs_prefix:
+        return None
+    if not gcs_uri.startswith(gcs_prefix):
+        logger.debug(
+            "GCS URI %r does not start with ATOM_LOG_URL_GCS_PREFIX %r",
+            gcs_uri, gcs_prefix,
+        )
+        return None
+    relative = gcs_uri[len(gcs_prefix):].lstrip("/")
+    return f"{web_prefix}/{relative}"
+
+
 # ---------------------------------------------------------------------------
 # Main REPL loop
 # ---------------------------------------------------------------------------
@@ -684,6 +716,19 @@ async def run_repl(
             print(f"\033[48;5;240m💾 [Saved]\033[0m {session_file}")
 
     print(f"\n\033[48;5;24m📊 [Session Total]\033[0m {format_session_usage(session_usage)}")
+
+    # ── Generate session HTML report ──
+    print("\n📄 Generating session HTML report ...")
+    html_path, html_gcs_uri = turn_logger.generate_session_html()
+    if html_path:
+        print(f"   📄 Local: {html_path}")
+    if html_gcs_uri:
+        print(f"   ☁️  GCS:   {html_gcs_uri}")
+        web_url = _gcs_uri_to_web_url(html_gcs_uri)
+        if web_url:
+            print(f"   🌐 Web:   {web_url}")
+    elif html_path:
+        print("   ☁️  GCS:   (skipped — GCS not configured)")
 
     if gcs_audit_logger:
         print("\n📝 Flushing session-end log to GCS ...")

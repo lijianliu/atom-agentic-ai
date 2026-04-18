@@ -437,7 +437,51 @@ class TurnLogger:
             label=label,
             override_turn=0,
         )
-    
+
+    def generate_session_html(self) -> tuple[Path | None, str | None]:
+        """Convert turn logs to HTML and upload to GCS.
+
+        Uses ``turn_log_to_html`` to render all session log files into
+        a single HTML report.  The HTML is saved locally inside the
+        session directory and also uploaded to GCS (if configured).
+
+        Returns
+        -------
+        (local_path, gcs_uri)
+            ``local_path`` — path to the generated HTML file (or ``None``
+            if generation failed).
+            ``gcs_uri`` — the ``gs://`` URI of the uploaded HTML (or
+            ``None`` if GCS upload was skipped/failed).
+        """
+        try:
+            from turn_log_to_html import load_session_logs, render_html
+
+            entries = load_session_logs(self.session_dir)
+            if not entries:
+                logger.warning(
+                    "generate_session_html: no turn-log entries in %s",
+                    self.session_dir,
+                )
+                return None, None
+
+            html_content = render_html(entries, self.session_dir.name)
+            html_path = self.session_dir / "session.html"
+            html_path.write_text(html_content, encoding="utf-8")
+            logger.info(
+                "Generated session HTML: %s (%d entries)", html_path, len(entries),
+            )
+
+            # Upload to GCS
+            gcs_uri = self._gcs_logger.upload_turn_log(html_path, html_content)
+
+            return html_path, gcs_uri
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "generate_session_html failed: %s", exc, exc_info=True,
+            )
+            return None, None
+
     @property
     def previous_turn(self) -> int:
         """Previous turn number (for attributing tool results)."""
