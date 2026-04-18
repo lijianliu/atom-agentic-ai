@@ -450,6 +450,7 @@ class GCSClientFactory:
         self._client: _gcs.Client | None = None
         self._fetched_at: float = 0.0  # monotonic timestamp of last fetch
         self._lock = threading.Lock()
+        self._refresh_count: int = 0   # total number of token refreshes
 
     def get_client(self) -> _gcs.Client:
         """Return a GCS client with a valid access token.
@@ -459,9 +460,30 @@ class GCSClientFactory:
         """
         with self._lock:
             now = time.monotonic()
-            if self._client is None or (now - self._fetched_at) >= self._ttl:
+            age = now - self._fetched_at
+            if self._client is None or age >= self._ttl:
+                reason = "first call" if self._client is None else f"token expired (age={age:.1f}s, ttl={self._ttl}s)"
+                logger.info(
+                    "GCS_AUTH get_client → REFRESH needed (%s), "
+                    "thread=%s, refresh_count=%d",
+                    reason, threading.current_thread().name, self._refresh_count,
+                )
+                t0 = time.monotonic()
                 self._client = self._build_client()
-                self._fetched_at = now
+                elapsed = time.monotonic() - t0
+                self._fetched_at = now          # original: TTL counts from before the build
+                self._refresh_count += 1
+                logger.info(
+                    "GCS_AUTH get_client → REFRESH done in %.3fs, "
+                    "thread=%s, total_refreshes=%d",
+                    elapsed, threading.current_thread().name, self._refresh_count,
+                )
+            else:
+                logger.debug(
+                    "GCS_AUTH get_client → CACHE HIT (age=%.1fs / ttl=%ds), "
+                    "thread=%s",
+                    age, self._ttl, threading.current_thread().name,
+                )
             return self._client
 
     @staticmethod
@@ -474,28 +496,41 @@ class GCSClientFactory:
         last_exc: Exception | None = None
         for attempt in range(1, FETCH_TOKEN_MAX_RETRIES + 1):
             try:
+                logger.info(
+                    "GCS_AUTH _fetch_token → START (attempt %d/%d), thread=%s",
+                    attempt, FETCH_TOKEN_MAX_RETRIES, threading.current_thread().name,
+                )
+                t0 = time.monotonic()
                 tok = subprocess.check_output(
                     ["gcloud", "auth", "print-access-token"],
                     encoding="utf-8",
                     timeout=FETCH_TOKEN_TIMEOUT,
                 ).strip()
+                elapsed = time.monotonic() - t0
                 if not tok:
                     raise RuntimeError("gcloud auth print-access-token returned empty")
-                logger.debug("Fetched fresh gcloud access token (%d chars)", len(tok))
+                logger.info(
+                    "GCS_AUTH _fetch_token → END OK in %.3fs (%d chars), thread=%s",
+                    elapsed, len(tok), threading.current_thread().name,
+                )
                 return tok
             except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                elapsed = time.monotonic() - t0
                 last_exc = exc
+                logger.warning(
+                    "GCS_AUTH _fetch_token → FAILED attempt %d/%d in %.3fs (%s), thread=%s",
+                    attempt, FETCH_TOKEN_MAX_RETRIES, elapsed, exc,
+                    threading.current_thread().name,
+                )
                 if attempt < FETCH_TOKEN_MAX_RETRIES:
                     backoff = FETCH_TOKEN_RETRY_BACKOFF ** attempt
                     logger.warning(
-                        "GCSLogger: gcloud token fetch attempt %d/%d failed (%s), "
-                        "retrying in %ds ...",
-                        attempt, FETCH_TOKEN_MAX_RETRIES, exc, backoff,
+                        "GCSLogger: retrying in %ds ...", backoff,
                     )
                     time.sleep(backoff)
                 else:
                     logger.error(
-                        "GCSLogger: gcloud token fetch failed after %d attempts",
+                        "GCS_AUTH _fetch_token → GAVE UP after %d attempts",
                         FETCH_TOKEN_MAX_RETRIES,
                     )
         raise last_exc  # type: ignore[misc]
