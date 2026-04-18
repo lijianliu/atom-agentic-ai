@@ -1,7 +1,7 @@
 """
 turn_logger.py — Session / Query / Turn / Sequence Conversation Logging
 ========================================================================
-Logs every LLM output (thinking, text, tool plan, tool exec) in 
+Logs every LLM output (thinking, text, tool plan, tool exec, usage) in 
 human-readable MIME multipart format.
 
 See docs/logging-v2.md for the design document.
@@ -24,7 +24,7 @@ Where:
     QQ = query number, 2 digits, zero-padded
     TT = turn number (model request #), 2 digits, zero-padded
     SS = sequence within turn, 2 digits, zero-padded
-    type = thinking | text | plan | exec
+    type = thinking | text | plan | exec | usage
     label = 50-char description (alphanumeric only, others become '_')
 
 Usage:
@@ -35,6 +35,7 @@ Usage:
     logger.log_text(content)
     logger.log_tool_plan(tool_name, args, call_id)
     logger.log_tool_exec(tool_name, args, call_id, result)
+    logger.log_usage(usage_dict)
 """
 from __future__ import annotations
 
@@ -260,7 +261,7 @@ class TurnLogger:
         """Write a MIME multipart-style log file.
         
         Args:
-            log_type: File type suffix (thinking, text, plan, exec)
+            log_type: File type suffix (thinking, text, plan, exec, usage)
             headers: Key-value pairs for the header block
             parts: List of (content_type, body) tuples
             label: 50-char description for filename (auto-sanitized)
@@ -408,6 +409,88 @@ class TurnLogger:
             label=label,
             override_query=override_query,
             override_turn=override_turn,
+        )
+
+    def log_usage(
+        self,
+        usage_dict: dict[str, Any],
+        label: str = "",
+        is_query_total: bool = False,
+    ) -> Path:
+        """Log token usage and cost for a turn.
+
+        Called at the end of each model-request turn with the usage dict
+        produced by ``build_usage_dict()``.
+
+        Args:
+            usage_dict: Token/cost dict (from ``build_usage_dict()``).
+            label: Optional filename label (auto-generated if empty).
+            is_query_total: If True, this is a query-level aggregate logged
+                            at turn 0 rather than per-turn usage.
+        """
+        from usage_helpers import _calc_cost, PRICE_INPUT_BASE, PRICE_OUTPUT, PRICE_CACHE_READ_RATE, PRICE_CACHE_WRITE_RATE
+
+        cost = usage_dict.get("cost_usd", 0)
+        inp = usage_dict.get("input_tokens", 0)
+        out = usage_dict.get("output_tokens", 0)
+        cache_read = usage_dict.get("cache_read_tokens", 0)
+        cache_write = usage_dict.get("cache_write_tokens", 0)
+        new_t = usage_dict.get("new_tokens", 0)
+        reqs = usage_dict.get("requests", 0)
+        tools = usage_dict.get("tool_calls", 0)
+        cache_pct = usage_dict.get("cache_hit_pct", 0)
+
+        # Per-category cost breakdown (matches console output)
+        read_cost, write_cost, new_cost, out_cost, total_cost = _calc_cost(
+            cache_read, cache_write, new_t, out,
+        )
+        cache_read_price = PRICE_INPUT_BASE * PRICE_CACHE_READ_RATE
+        cache_write_price = PRICE_INPUT_BASE * PRICE_CACHE_WRITE_RATE
+
+        headers = {
+            "Cost-USD": f"{cost:.4f}",
+            "Input-Tokens": str(inp),
+            "Output-Tokens": str(out),
+            "Cache-Read-Tokens": str(cache_read),
+            "Cache-Write-Tokens": str(cache_write),
+        }
+
+        # Expanded human-readable summary
+        summary_lines = [
+            f"Total cost:        ${cost:.4f}",
+            f"",
+            f"Tokens",
+            f"  Input tokens:    {inp:,}",
+            f"    Cache read:    {cache_read:,}",
+            f"    Cache write:   {cache_write:,}",
+            f"    New (uncached): {new_t:,}",
+            f"  Output tokens:   {out:,}",
+            f"  Cache hit:       {cache_pct}%",
+            f"",
+            f"Cost breakdown",
+            f"  Cache read:      {cache_read:,} \u00d7 ${cache_read_price:.2f}/1M = ${read_cost:.4f}",
+            f"  Cache write:     {cache_write:,} \u00d7 ${cache_write_price:.2f}/1M = ${write_cost:.4f}",
+            f"  New input:       {new_t:,} \u00d7 ${PRICE_INPUT_BASE:.0f}/1M = ${new_cost:.4f}",
+            f"  Output:          {out:,} \u00d7 ${PRICE_OUTPUT:.0f}/1M = ${out_cost:.4f}",
+            f"  Total:           ${read_cost:.4f} + ${write_cost:.4f} + ${new_cost:.4f} + ${out_cost:.4f} = ${total_cost:.4f}",
+            f"",
+            f"Requests:          {reqs}",
+            f"Tool calls:        {tools}",
+        ]
+        summary = "\n".join(summary_lines)
+
+        if not label:
+            if is_query_total:
+                label = f"query_{self._query}_total_${cost:.4f}"
+            else:
+                label = f"q{self._query}_t{self._turn}_${cost:.4f}"
+
+        return self._write_file(
+            log_type="usage",
+            headers=headers,
+            parts=[("usage", summary)],
+            label=label,
+            override_turn=0 if is_query_total else None,
         )
     
     def log_system_prompt(self, content: str, label: str = "system_prompt") -> Path:

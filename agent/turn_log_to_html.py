@@ -8,7 +8,7 @@ Where:
     QQ = query number (2 digits)
     TT = turn number (2 digits)
     SS = sequence number (2 digits)
-    type = thinking | text | plan | exec
+    type = thinking | text | plan | exec | usage
     label = 50-char description
 
 For detailed documentation about this tool, features, and usage examples,
@@ -38,7 +38,7 @@ def parse_filename(filename: str) -> dict[str, Any] | None:
         or None if filename doesn't match pattern.
     """
     # q01.t02.s03.exec.tool_name_args.txt or q01.t00.s01.system_prompt.txt
-    pattern = r"^q(\d+)\.t(\d+)\.s(\d+)\.(thinking|text|plan|exec|system_prompt|user_prompt|session_metadata)\.(.+)\.txt$"
+    pattern = r"^q(\d+)\.t(\d+)\.s(\d+)\.(thinking|text|plan|exec|usage|system_prompt|user_prompt|session_metadata)\.(.+)\.txt$"
     match = re.match(pattern, filename)
     if not match:
         return None
@@ -177,7 +177,7 @@ function togglePretty(id) {
 }
 
 function toggleType(type, rowId) {
-  const allTypes = ['THINKING', 'TEXT', 'PLAN', 'EXEC', 'SESSION_METADATA', 'SYSTEM_PROMPT', 'USER_PROMPT'];
+  const allTypes = ['THINKING', 'TEXT', 'PLAN', 'EXEC', 'USAGE', 'SESSION_METADATA', 'SYSTEM_PROMPT', 'USER_PROMPT'];
   
   // Get all TYPE cells for each type
   const getTypeCells = (t) => document.querySelectorAll('.type-cell[data-type="' + t + '"]');
@@ -259,7 +259,7 @@ function toggleTypeFromPopup(type) {
 }
 
 function showAllTypes() {
-  const allTypes = ['THINKING', 'TEXT', 'PLAN', 'EXEC', 'SESSION_METADATA', 'SYSTEM_PROMPT', 'USER_PROMPT'];
+  const allTypes = ['THINKING', 'TEXT', 'PLAN', 'EXEC', 'USAGE', 'SESSION_METADATA', 'SYSTEM_PROMPT', 'USER_PROMPT'];
   const getTypeCells = (t) => document.querySelectorAll('.type-cell[data-type="' + t + '"]');
   const getRows = (t) => document.querySelectorAll('.row-' + t.toLowerCase());
   
@@ -416,6 +416,7 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
             "TEXT": "bg-blue-100 text-blue-800 border-blue-300",
             "PLAN": "bg-yellow-100 text-yellow-800 border-yellow-300",
             "EXEC": "bg-green-100 text-green-800 border-green-300",
+            "USAGE": "bg-orange-100 text-orange-800 border-orange-300",
             "SYSTEM_PROMPT": "bg-gray-100 text-gray-800 border-gray-400",
             "USER_PROMPT": "bg-cyan-100 text-cyan-800 border-cyan-300",
             "SESSION_METADATA": "bg-indigo-100 text-indigo-800 border-indigo-300",
@@ -450,6 +451,7 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
             # For TEXT entries, don't show content_type in content
             # For PLAN, show tool name if available
             # For EXEC, show tool name once (on first part) + content_type (input/output)
+            # For USAGE, show cost from headers if available
             header_html = ""
             if entry_type == "TEXT" and content_type == "text":
                 # No header, badge is in separate column
@@ -477,6 +479,15 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
   <div class="flex items-center gap-1 mb-1">
     {labels_html}
     {toggle_btn}
+  </div>
+"""
+            elif entry_type == "USAGE":
+                # Show cost badge from headers
+                cost_usd = headers.get("Cost-USD", "")
+                if cost_usd:
+                    header_html = f"""
+  <div class="flex items-center gap-1 mb-1">
+    <span class="text-[9px] font-mono bg-orange-200 px-1.5 py-0.5 rounded font-semibold">${cost_usd}</span>
   </div>
 """
             else:
@@ -511,6 +522,7 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
             "SYSTEM_PROMPT": "SYS",
             "USER_PROMPT": "USER",
             "SESSION_METADATA": "META",
+            "USAGE": "COST",
         }.get(entry_type, entry_type)
         
         rows_html += f"""
@@ -531,6 +543,7 @@ def render_html(entries: list[dict[str, Any]], session_name: str) -> str:
     text_count = sum(1 for e in entries if e["file_info"]["type"] == "text")
     plan_count = sum(1 for e in entries if e["file_info"]["type"] == "plan")
     exec_count = sum(1 for e in entries if e["file_info"]["type"] == "exec")
+    usage_count = sum(1 for e in entries if e["file_info"]["type"] == "usage")
     system_prompt_count = sum(1 for e in entries if e["file_info"]["type"] == "system_prompt")
     user_prompt_count = sum(1 for e in entries if e["file_info"]["type"] == "user_prompt")
     session_metadata_count = sum(1 for e in entries if e["file_info"]["type"] == "session_metadata")
@@ -572,6 +585,7 @@ mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2p
 .row-text.row-highlighted {{ background-color: rgba(59, 130, 246, 0.08) !important; }}
 .row-plan.row-highlighted {{ background-color: rgba(234, 179, 8, 0.08) !important; }}
 .row-exec.row-highlighted {{ background-color: rgba(34, 197, 94, 0.08) !important; }}
+.row-usage.row-highlighted {{ background-color: rgba(249, 115, 22, 0.08) !important; }}
 .row-session_metadata.row-highlighted {{ background-color: rgba(99, 102, 241, 0.08) !important; }}
 .row-system_prompt.row-highlighted {{ background-color: rgba(107, 114, 128, 0.08) !important; }}
 .row-user_prompt.row-highlighted {{ background-color: rgba(6, 182, 212, 0.08) !important; }}
@@ -624,6 +638,10 @@ mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2p
       <input type="checkbox" id="check-THINKING" onchange="toggleTypeFromPopup('THINKING')" checked />
       <label for="check-THINKING" class="text-purple-800">💭 THINKING ({thinking_count})</label>
     </div>
+    <div class="filter-toggle">
+      <input type="checkbox" id="check-USAGE" onchange="toggleTypeFromPopup('USAGE')" checked />
+      <label for="check-USAGE" class="text-orange-800">💰 COST ({usage_count})</label>
+    </div>
   </div>
 </div>
 
@@ -634,7 +652,7 @@ mark.search-highlight {{ background-color: #ffc220; color: #000; padding: 1px 2p
 <h1 class="text-lg font-bold text-[#0053e2]">⚛️  Atom Agentic AI Turn Log: {html.escape(session_name)}</h1>
 <span class="text-xs text-gray-400 ml-auto">
 {line_num} lines · {total_queries} queries · {total_turns} turns · 
-💭{thinking_count} 🤖{text_count} 📋{plan_count} ⚡{exec_count} ⚙️{session_metadata_count} 📜{system_prompt_count} 👤{user_prompt_count}
+💭{thinking_count} 🤖{text_count} 📋{plan_count} ⚡{exec_count} 💰{usage_count} ⚙️{session_metadata_count} 📜{system_prompt_count} 👤{user_prompt_count}
 </span>
 </div>
 

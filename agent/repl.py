@@ -575,10 +575,12 @@ async def run_repl(
                                         for tc in stream_tool_calls.values():
                                             turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
 
+                                        turn_usage = stream.usage()
                                         print(
                                             f"\n\033[48;5;240m📊 [Usage \033[0m"
-                                            f"{format_usage_line(stream.usage(), query=turn_logger.current_query, turn=turn_logger.current_turn)}"
+                                            f"{format_usage_line(turn_usage, query=turn_logger.current_query, turn=turn_logger.current_turn)}"
                                         )
+                                        turn_logger.log_usage(build_usage_dict(turn_usage))
 
                                 elif Agent.is_call_tools_node(node):
                                     for part in node.model_response.parts:
@@ -765,6 +767,10 @@ async def _finalize_turn(
         query = turn_logger.current_query if turn_logger else 0
         print(f"\n\033[48;5;240m📊 [Usage {label}\033[0m{format_usage_line(usage, query=query)}")
         print(f"\033[48;5;240m📊 [Session \033[0m{format_session_usage(session_usage)}")
+
+        # Log query-level usage to turn log
+        if turn_logger:
+            turn_logger.log_usage(build_usage_dict(usage), is_query_total=True)
 
         if gcs_audit_logger:
             if cancelled:
