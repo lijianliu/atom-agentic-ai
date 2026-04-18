@@ -14,6 +14,9 @@ Hierarchy:
     Turn    = one model request within a query (t01, t02, ...)
     Sequence = one logged item within a turn (s01, s02, ...)
 
+Directory structure:
+    LOG_DIR / YYYY-MM-DD / username / HH-MM-SS.mmm /
+
 File naming:
     {session_dir}/q{QQ}.t{TT}.s{SS}.{type}.{label}.txt
 
@@ -35,6 +38,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,13 +110,54 @@ class TurnLogger:
         # (query, turn) -> last sequence number
         self._sequences: dict[tuple[int, int], int] = {}
         
+    @staticmethod
+    def _parse_session_id(session_id: str) -> tuple[str, str, str] | None:
+        """Parse 'user-YYYY-MM-DDThh-mm-ss.mmmZ' → (username, date, time).
+
+        Returns None if the session_id doesn't match the expected format.
+
+        Examples:
+            'l0l0cnm-2026-04-17T19-18-50.636Z'
+                → ('l0l0cnm', '2026-04-17', '19-18-50.636')
+            'my-user-2026-04-17T09-05-12.001Z'
+                → ('my-user', '2026-04-17', '09-05-12.001')
+        """
+        if "T" not in session_id:
+            return None
+        prefix, _, time_z = session_id.partition("T")
+        time_part = time_z.rstrip("Z") if time_z else ""
+        if len(prefix) < 11:  # need at least '-YYYY-MM-DD' (11 chars)
+            return None
+        date_part = prefix[-10:]
+        if not re.match(r"\d{4}-\d{2}-\d{2}$", date_part):
+            return None
+        username = prefix[:-11]  # strip the trailing '-YYYY-MM-DD'
+        if not username:
+            return None
+        return username, date_part, time_part
+
     @classmethod
     def create(cls, session_id: str) -> "TurnLogger":
         """Create a TurnLogger for the given session ID.
         
-        Creates the session directory under LOG_DIR.
+        Builds a nested directory structure under LOG_DIR:
+            LOG_DIR / YYYY-MM-DD / username / HH-MM-SS.mmm
+
+        Falls back to the flat ``LOG_DIR / session_id`` layout if the
+        session_id cannot be parsed.
         """
-        session_dir = LOG_DIR / session_id
+        parsed = cls._parse_session_id(session_id)
+        if parsed:
+            username, date_part, time_part = parsed
+            session_dir = LOG_DIR / date_part / username / time_part
+        else:
+            session_dir = LOG_DIR / session_id
+            logger.warning(
+                "Could not parse session_id %r into date/user/time; "
+                "using flat directory layout",
+                session_id,
+            )
+
         session_dir.mkdir(parents=True, exist_ok=True)
         logger.info("TurnLogger created: %s", session_dir)
         return cls(session_dir)
