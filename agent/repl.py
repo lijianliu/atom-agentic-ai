@@ -11,8 +11,10 @@ the REPL orchestration.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import signal
+from dataclasses import replace
 import anyio
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from typing import Any
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     PartDeltaEvent,
@@ -54,17 +57,69 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# History processor: surgical ThinkingPart stripping before every API call
+# ---------------------------------------------------------------------------
+
+_STRIP_ALL_THINKING = os.environ.get("STRIP_ALL_THINKING") == "1"
+
+
+def strip_thinking_blocks(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Remove stale ThinkingPart entries from history before each request.
+
+    Default behavior:
+        Strip ThinkingPart from every ModelResponse EXCEPT the most recent one.
+
+    Fallback:
+        If STRIP_ALL_THINKING=1, strip ThinkingPart from every ModelResponse,
+        including the most recent one.
+    """
+    last_response_idx = -1
+    for i, msg in enumerate(messages):
+        if isinstance(msg, ModelResponse):
+            last_response_idx = i
+
+    if last_response_idx < 0:
+        return messages
+
+    stripped_count = 0
+    cleaned: list[ModelMessage] = []
+
+    for i, msg in enumerate(messages):
+        if isinstance(msg, ModelResponse):
+            preserve = (i == last_response_idx) and not _STRIP_ALL_THINKING
+            if not preserve:
+                new_parts = [p for p in msg.parts if not isinstance(p, ThinkingPart)]
+                removed = len(msg.parts) - len(new_parts)
+                if removed:
+                    stripped_count += removed
+                    msg = replace(msg, parts=new_parts)
+        cleaned.append(msg)
+
+    if stripped_count:
+        logger.debug(
+            "history_processor: stripped %d thinking block(s) "
+            "(strip_all=%s, last_response_preserved=%s)",
+            stripped_count,
+            _STRIP_ALL_THINKING,
+            (not _STRIP_ALL_THINKING) and last_response_idx >= 0,
+        )
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
 # Multi-line paste-aware input  (prompt_toolkit + bracketed paste)
 # ---------------------------------------------------------------------------
 
 _bindings = KeyBindings()
 
-@_bindings.add('enter')
+
+@_bindings.add("enter")
 def _submit(event):
     # A *typed* Enter submits the buffer.
     # Pasted newlines don't go through this binding (bracketed paste
     # inserts them directly), so multi-line pastes are preserved.
     event.current_buffer.validate_and_handle()
+
 
 _session = PromptSession(
     history=InMemoryHistory(),
@@ -78,7 +133,7 @@ async def _read_multiline_input(prompt: str = "") -> str:
     """Read user input with paste-friendly multiline support (async)."""
     return await _session.prompt_async(
         ANSI(prompt),
-        prompt_continuation=lambda width, line_number, is_soft_wrap: '',
+        prompt_continuation=lambda width, line_number, is_soft_wrap: "",
     )
 
 
@@ -86,25 +141,36 @@ async def _read_multiline_input(prompt: str = "") -> str:
 # History sanitisation (cancel-safety)
 # ---------------------------------------------------------------------------
 
+def _strip_thinking_parts_for_persistence(history: list) -> list:
+    """Return a deep-copied history with ThinkingPart removed for saving."""
+    history_copy = copy.deepcopy(history)
+    removed = 0
+
+    for msg in history_copy:
+        if isinstance(msg, ModelResponse):
+            original_len = len(msg.parts)
+            msg.parts = [p for p in msg.parts if not isinstance(p, ThinkingPart)]
+            removed += original_len - len(msg.parts)
+
+    if removed:
+        logger.debug(
+            "Prepared persistence copy: stripped %d ThinkingPart blocks",
+            removed,
+        )
+
+    return history_copy
+
+
 def _sanitize_history(history: list) -> None:
     """Validate the full message history and strip any broken pairs.
 
     The Anthropic API requires every tool_result to reference a tool_use
-    in the *immediately preceding* assistant message.  After a Ctrl+C
+    in the *immediately preceding* assistant message. After a Ctrl+C
     cancellation, partial tool exchanges can end up anywhere in the
     history — not just at the tail.
-
-    Strategy: walk the full history and validate every
-    ModelRequest/ModelResponse pair.  If any pair is broken, truncate
-    the history at that point (everything from the broken pair onward
-    is discarded).
     """
-    # ── Strip stale ThinkingPart blocks ──────────────────────────────
-    # Thinking parts carry a ``signature`` that the Anthropic API
-    # validates on subsequent requests.  After serialisation (or even
-    # across turns within the same session), signatures can become
-    # invalid, causing "Invalid `signature` in `thinking` block".
-    # Thinking parts are NOT needed for the conversation to continue.
+    # Strip stale ThinkingPart blocks at the REPL boundary.
+    # This only affects prior completed turns in the persisted/live REPL history.
     for msg in history:
         if isinstance(msg, ModelResponse):
             original_len = len(msg.parts)
@@ -214,8 +280,8 @@ async def run_repl(
         session_id = gcs_audit_logger.session_id
     else:
         import getpass
-
         from datetime import datetime, timezone
+
         username = os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser() or "unknown"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S.%f")[:-3] + "Z"
         session_id = f"{username}-{ts}"
@@ -229,28 +295,22 @@ async def run_repl(
     async with agent:
         # Log session metadata after agent is fully initialized
         try:
-            # Extract available tools from agent
-            # Log session metadata after agent is fully initialized
             tool_names = []
 
-            # Try different tool storage locations in pydantic-ai Agent
-            if hasattr(agent, '_function_toolset') and agent._function_toolset:
-                # Extract tool names from FunctionToolSet
-                if hasattr(agent._function_toolset, 'tools'):
+            if hasattr(agent, "_function_toolset") and agent._function_toolset:
+                if hasattr(agent._function_toolset, "tools"):
                     tool_names = sorted([name for name in agent._function_toolset.tools.keys()])
                     logger.debug("Extracted %d tools from _function_toolset", len(tool_names))
-            elif hasattr(agent, '_user_toolsets') and agent._user_toolsets:
-                # Try user toolsets
+            elif hasattr(agent, "_user_toolsets") and agent._user_toolsets:
                 for toolset in agent._user_toolsets:
-                    if hasattr(toolset, 'tools'):
+                    if hasattr(toolset, "tools"):
                         tool_names.extend(toolset.tools.keys())
                 tool_names = sorted(set(tool_names))
                 logger.debug("Extracted %d tools from _user_toolsets", len(tool_names))
 
-            # Get model name
             model_name = ""
-            if hasattr(agent, 'model'):
-                model_name = str(agent.model) if hasattr(agent.model, '__str__') else type(agent.model).__name__
+            if hasattr(agent, "model"):
+                model_name = str(agent.model) if hasattr(agent.model, "__str__") else type(agent.model).__name__
 
             turn_logger.log_session_metadata(
                 model_name=model_name,
@@ -262,11 +322,12 @@ async def run_repl(
             if not tool_names:
                 logger.warning(
                     "No tools extracted from agent (_function_toolset: %s, _user_toolsets: %s)",
-                    hasattr(agent, '_function_toolset'),
-                    hasattr(agent, '_user_toolsets')
+                    hasattr(agent, "_function_toolset"),
+                    hasattr(agent, "_user_toolsets"),
                 )
         except Exception as e:
             logger.warning("Failed to log session metadata: %s", e, exc_info=True)
+
         # ── Resolve session file (auto-generate if not specified) ──
         if session_file is None:
             session_file = default_session_path(session_id)
@@ -312,7 +373,7 @@ async def run_repl(
             async def _run() -> None:
                 nonlocal cancelled
 
-                # Strip stale thinking signatures before every API call
+                # REPL-boundary sanitization only
                 _sanitize_history(message_history)
 
                 async with agent.iter(
@@ -321,22 +382,21 @@ async def run_repl(
                     usage_limits=UsageLimits(request_limit=500),
                 ) as run:
                     try:
-                        # Pending tool calls waiting for results
-                        pending_tool_calls: list[tuple[str, Any, str]] = []  # [(tool_name, args, call_id), ...]
+                        pending_tool_calls: list[tuple[str, Any, str]] = []
+
                         async for node in run:
                             if Agent.is_model_request_node(node):
-                                # Start a new turn within this query
                                 turn_logger.start_turn()
-                                
-                                # Log tool results from previous turn
-                                # (the ModelRequestNode.request contains ToolReturnParts)
+
                                 if pending_tool_calls:
                                     for part in node.request.parts:
                                         if isinstance(part, ToolReturnPart):
                                             for tool_name, args, call_id in list(pending_tool_calls):
                                                 if call_id == part.tool_call_id:
                                                     turn_logger.log_tool_exec(
-                                                        tool_name, args, call_id,
+                                                        tool_name,
+                                                        args,
+                                                        call_id,
                                                         result=part.content,
                                                         override_query=turn_logger.current_query,
                                                         override_turn=turn_logger.previous_turn,
@@ -351,32 +411,26 @@ async def run_repl(
                                                     pending_tool_calls.remove((tool_name, args, call_id))
                                                     break
 
-                                # --- Stream the model's response token-by-token ---
-                                tool_args_printed = 0       # chars of tool args emitted
-                                TOOL_ARGS_CAP = 200         # max chars before "…"
-                                # Per-stream accumulators for turn logging
+                                tool_args_printed = 0
+                                TOOL_ARGS_CAP = 200
                                 stream_thinking: list[str] = []
                                 stream_text: list[str] = []
                                 stream_tool_calls: dict[int, dict] = {}
-                                current_part_index = -1
-                                tool_args_printed = 0
-                                tool_call_open = False  # Track if we have an unclosed tool call paren
+                                tool_call_open = False
 
                                 async with node.stream(run.ctx) as stream:
                                     async for event in stream:
                                         if isinstance(event, PartStartEvent):
-                                            # Close previous tool call if still open
                                             if tool_call_open:
                                                 print(")", flush=True)
                                                 tool_call_open = False
-                                            # Clear streaming counter if switching from a capped tool call
                                             if tool_args_printed >= TOOL_ARGS_CAP:
                                                 kb = tool_args_printed / 1024
                                                 print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
-                                            
+
                                             current_part_index = event.index
-                                            tool_args_printed = 0  # Reset for new part
-                                            
+                                            tool_args_printed = 0
+
                                             if isinstance(event.part, ThinkingPart):
                                                 print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
                                                 content = event.part.content
@@ -392,23 +446,23 @@ async def run_repl(
                                             elif isinstance(event.part, ToolCallPart):
                                                 args_str = str(event.part.args) if event.part.args else ""
                                                 print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}(", end="", flush=True)
-                                                # Apply TOOL_ARGS_CAP to initial args
                                                 if args_str:
                                                     if len(args_str) > TOOL_ARGS_CAP:
                                                         print(f"{args_str[:TOOL_ARGS_CAP]}…)", flush=True)
                                                         tool_args_printed = TOOL_ARGS_CAP
-                                                        tool_call_open = False  # Closed with truncation
+                                                        tool_call_open = False
                                                     else:
                                                         print(args_str, end="", flush=True)
                                                         tool_args_printed = len(args_str)
-                                                        tool_call_open = True  # Still open, may get deltas
+                                                        tool_call_open = True
                                                 else:
-                                                    tool_call_open = True  # Empty args, waiting for deltas
+                                                    tool_call_open = True
                                                 stream_tool_calls[current_part_index] = {
                                                     "tool": event.part.tool_name,
                                                     "args": args_str,
                                                     "call_id": getattr(event.part, "tool_call_id", None),
                                                 }
+
                                         elif isinstance(event, PartDeltaEvent):
                                             if isinstance(event.delta, TextPartDelta):
                                                 delta_text = event.delta.content_delta
@@ -432,41 +486,33 @@ async def run_repl(
                                                     else:
                                                         print(chunk, end="", flush=True)
                                                 tool_args_printed += len(chunk) if chunk else 0
-                                                # Show live byte counter after cap is reached
                                                 if tool_args_printed >= TOOL_ARGS_CAP and chunk:
                                                     kb = tool_args_printed / 1024
                                                     print(f"\r\033[K  \u23f3 streaming\u2026 {kb:.1f}KB", end="", flush=True)
-                                                # Accumulate full args for logging
                                                 if chunk and event.index in stream_tool_calls:
                                                     stream_tool_calls[event.index]["args"] += chunk
 
-                                    # Close any unclosed tool call paren
                                     if tool_call_open:
                                         print(")", flush=True)
                                         tool_call_open = False
-                                    # Clear streaming counter line if we were past the cap
                                     if tool_args_printed >= TOOL_ARGS_CAP:
                                         kb = tool_args_printed / 1024
                                         print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
                                         tool_args_printed = 0
-                                    
-                                    # End of stream — log accumulated content (defensive join)
+
                                     if stream_thinking:
-                                        turn_logger.log_thinking(
-                                            "".join(s for s in stream_thinking if isinstance(s, str))
-                                        )
+                                        turn_logger.log_thinking("".join(s for s in stream_thinking if isinstance(s, str)))
                                     if stream_text:
-                                        turn_logger.log_text(
-                                            "".join(s for s in stream_text if isinstance(s, str))
-                                        )
+                                        turn_logger.log_text("".join(s for s in stream_text if isinstance(s, str)))
                                     for tc in stream_tool_calls.values():
                                         turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
-                                    
-                                    # End of the stream — per-turn token usage
-                                    print(f"\n\033[48;5;240m📊 [Usage \033[0m{format_usage_line(stream.usage(), query=turn_logger.current_query, turn=turn_logger.current_turn)}")
+
+                                    print(
+                                        f"\n\033[48;5;240m📊 [Usage \033[0m"
+                                        f"{format_usage_line(stream.usage(), query=turn_logger.current_query, turn=turn_logger.current_turn)}"
+                                    )
 
                             elif Agent.is_call_tools_node(node):
-                                # Just store tool calls - we'll log AND print when results are available
                                 for part in node.model_response.parts:
                                     if isinstance(part, ToolCallPart):
                                         pending_tool_calls.append((
@@ -479,29 +525,25 @@ async def run_repl(
                                             f"\033[97;48;5;172m⚙️ [Tool Exec - Start]\033[0m {part.tool_name}({args_str})",
                                             flush=True,
                                         )
+
                             elif Agent.is_end_node(node):
-                                # Flush any remaining pending tool calls
                                 if pending_tool_calls:
                                     try:
                                         all_msgs = run.all_messages()
-                                        # Search ALL messages for tool results
                                         for msg in all_msgs:
                                             if isinstance(msg, ModelRequest):
                                                 for part in msg.parts:
                                                     if isinstance(part, ToolReturnPart):
-                                                        for i, (tool_name, args, call_id) in enumerate(list(pending_tool_calls)):
+                                                        for tool_name, args, call_id in list(pending_tool_calls):
                                                             if call_id == part.tool_call_id:
-                                                                # Log to file
                                                                 turn_logger.log_tool_exec(
                                                                     tool_name,
                                                                     args,
                                                                     call_id,
                                                                     result=part.content,
                                                                 )
-                                                                # Print to console
                                                                 args_str = str(args)[:1000] if args else ""
                                                                 print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
-                                                                # Log to GCS
                                                                 if gcs_audit_logger:
                                                                     await gcs_audit_logger.log("tool_call", {
                                                                         "tool": tool_name,
@@ -521,8 +563,12 @@ async def run_repl(
 
                     finally:
                         await _finalize_turn(
-                            run, message_history, session_usage,
-                            cancelled, gcs_audit_logger, verbose,
+                            run,
+                            message_history,
+                            session_usage,
+                            cancelled,
+                            gcs_audit_logger,
+                            verbose,
                             turn_logger,
                         )
 
@@ -537,10 +583,6 @@ async def run_repl(
             try:
                 await task
             except anyio.ClosedResourceError:
-                # Ctrl-C during tool execution can cause pydantic_graph / anyio
-                # cleanup to close an internal memory stream while graph tasks
-                # are still unwinding.  Treat that as a normal cancellation
-                # path and return control to the REPL instead of exiting.
                 cancelled = True
                 logger.info(
                     "Suppressed anyio.ClosedResourceError during cancellation; returning to REPL"
@@ -553,17 +595,15 @@ async def run_repl(
             if cancelled:
                 print("\n\033[41m⚠️  Cancelled.\033[0m")
 
-            # ── Flush turn to GCS after every prompt is processed ──
             if gcs_audit_logger:
                 gcs_uri = await gcs_audit_logger.flush_turn()
                 if gcs_uri:
                     print(f"\033[48;5;240m📝 [Logged]\033[0m {gcs_uri}")
 
-            # ── Persist session to disk ──
-            save_session(message_history, session_usage, session_file)
+            history_to_save = _strip_thinking_parts_for_persistence(message_history)
+            save_session(history_to_save, session_usage, session_file)
             print(f"\033[48;5;240m💾 [Saved]\033[0m {session_file}")
 
-    # ── Session summary ──
     print(f"\n\033[48;5;24m📊 [Session Total]\033[0m {format_session_usage(session_usage)}")
 
     if gcs_audit_logger:
@@ -610,8 +650,6 @@ async def _finalize_turn(
                 await gcs_audit_logger.log("token_usage", build_usage_dict(usage))
 
     except Exception:
-        # run.result not available (cancelled before End node).
-        # Preserve partial conversation history.
         _save_partial_history(run, message_history)
         await _log_partial_usage(run, message_history, session_usage, gcs_audit_logger, turn_logger)
 

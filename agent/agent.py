@@ -40,7 +40,7 @@ from model import build_model, build_openai_model
 from mcp_helpers import DEFAULT_MCP_URL, build_tcp_mcp_server
 from local_tools import register_local_tools
 from logging_config import setup_logging, get_logger
-from repl import run_repl
+from repl import run_repl, strip_thinking_blocks
 
 logger = get_logger(__name__)
 
@@ -68,7 +68,7 @@ _ROOT_MODE_SYSTEM_PROMPT = (
 
 def get_system_prompt(root_mode: bool = False, prompt_file: Path | None = None) -> str:
     """Load system prompt from file, falling back to defaults.
-    
+
     Priority:
       1. Explicit --system-prompt file (if provided)
       2. ~/.config/atom-agentic-ai/system_prompt.md (if exists)
@@ -81,7 +81,7 @@ def get_system_prompt(root_mode: bool = False, prompt_file: Path | None = None) 
             logger.info("Loaded system prompt from %s", prompt_file)
             return prompt
         logger.warning("System prompt file is empty: %s", prompt_file)
-    
+
     # 2. Default config location
     if _SYSTEM_PROMPT_PATH.is_file():
         prompt = _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
@@ -89,7 +89,7 @@ def get_system_prompt(root_mode: bool = False, prompt_file: Path | None = None) 
             logger.info("Loaded system prompt from %s", _SYSTEM_PROMPT_PATH)
             return prompt
         logger.warning("System prompt file is empty, using default: %s", _SYSTEM_PROMPT_PATH)
-    
+
     # 3. Built-in default
     return _ROOT_MODE_SYSTEM_PROMPT if root_mode else _DEFAULT_SYSTEM_PROMPT
 
@@ -102,7 +102,7 @@ def build_agent(
 ) -> Agent:  # type: ignore[type-arg]
     """Build an agent with either MCP tools (sandbox) or local tools (root mode)."""
     prompt = get_system_prompt(root_mode=root_mode, prompt_file=system_prompt_file)
-    
+
     # --- Root mode: local tools, no MCP ---
     if root_mode:
         logger.info("Root mode enabled — using local tools (no MCP sandbox)")
@@ -124,6 +124,7 @@ def build_agent(
                     anthropic_cache_messages=True,
                 ),
                 system_prompt=prompt,
+                history_processors=[strip_thinking_blocks],
             )
         register_local_tools(agent)
         return agent
@@ -149,6 +150,7 @@ def build_agent(
         ),
         system_prompt=prompt,
         mcp_servers=[mcp_server],
+        history_processors=[strip_thinking_blocks],
     )
 
 
@@ -196,10 +198,10 @@ if __name__ == "__main__":
         "Atom Agent starting (openai=%s, root=%s, mcp_url=%s)",
         args.openai, args.root, args.mcp_url,
     )
-    
+
     # Get system prompt before building agent so we can log it
     system_prompt = get_system_prompt(root_mode=args.root, prompt_file=args.system_prompt)
-    
+
     agent = build_agent(
         use_openai=args.openai,
         mcp_url=args.mcp_url,
