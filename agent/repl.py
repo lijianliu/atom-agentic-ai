@@ -321,7 +321,7 @@ async def run_repl(
         session_id = f"{username}-{ts}"
         print(f"   \U0001f194 Session ID: {session_id}")
 
-    turn_logger = TurnLogger.create(session_id)
+    turn_logger = TurnLogger.create(session_id, gcs_logger=gcs_audit_logger)
     print(f"   \U0001f4c1 Turn logs: {turn_logger.session_dir}")
 
     print("   Type 'exit' to quit.  Ctrl+C cancels a running turn.")

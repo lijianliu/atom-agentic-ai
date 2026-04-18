@@ -15,7 +15,7 @@ Hierarchy:
     Sequence = one logged item within a turn (s01, s02, ...)
 
 Directory structure:
-    LOG_DIR / YYYY-MM-DD / username / HH-MM-SS.mmm /
+    LOG_DIR / YYYY-MM-DD / username / HH-MM-SS.mmmZ /
 
 File naming:
     {session_dir}/q{QQ}.t{TT}.s{SS}.{type}.{label}.txt
@@ -101,10 +101,18 @@ class TurnLogger:
     
     Creates human-readable log files for each piece of LLM output,
     organized by query, turn, and sequence number.
+    
+    Optionally mirrors every file to GCS via a ``GCSLogger`` instance.
     """
     
-    def __init__(self, session_dir: Path) -> None:
+    def __init__(
+        self,
+        session_dir: Path,
+        gcs_logger: Any | None = None,
+    ) -> None:
+        from gcs_audit_logger import NullGCSLogger
         self.session_dir = session_dir
+        self._gcs_logger = gcs_logger or NullGCSLogger()
         self._query: int = 0
         self._turn: int = 0
         # (query, turn) -> last sequence number
@@ -118,14 +126,14 @@ class TurnLogger:
 
         Examples:
             'l0l0cnm-2026-04-17T19-18-50.636Z'
-                → ('l0l0cnm', '2026-04-17', '19-18-50.636')
+                → ('l0l0cnm', '2026-04-17', '19-18-50.636Z')
             'my-user-2026-04-17T09-05-12.001Z'
-                → ('my-user', '2026-04-17', '09-05-12.001')
+                → ('my-user', '2026-04-17', '09-05-12.001Z')
         """
         if "T" not in session_id:
             return None
         prefix, _, time_z = session_id.partition("T")
-        time_part = time_z.rstrip("Z") if time_z else ""
+        time_part = time_z if time_z else ""
         if len(prefix) < 11:  # need at least '-YYYY-MM-DD' (11 chars)
             return None
         date_part = prefix[-10:]
@@ -137,14 +145,21 @@ class TurnLogger:
         return username, date_part, time_part
 
     @classmethod
-    def create(cls, session_id: str) -> "TurnLogger":
+    def create(
+        cls,
+        session_id: str,
+        gcs_logger: Any | None = None,
+    ) -> "TurnLogger":
         """Create a TurnLogger for the given session ID.
         
         Builds a nested directory structure under LOG_DIR:
-            LOG_DIR / YYYY-MM-DD / username / HH-MM-SS.mmm
+            LOG_DIR / YYYY-MM-DD / username / HH-MM-SS.mmmZ
 
         Falls back to the flat ``LOG_DIR / session_id`` layout if the
         session_id cannot be parsed.
+
+        When ``gcs_logger`` (a ``GCSLogger`` instance) is provided, every
+        log file is also uploaded to GCS.
         """
         parsed = cls._parse_session_id(session_id)
         if parsed:
@@ -159,8 +174,9 @@ class TurnLogger:
             )
 
         session_dir.mkdir(parents=True, exist_ok=True)
+        inst = cls(session_dir, gcs_logger=gcs_logger)
         logger.info("TurnLogger created: %s", session_dir)
-        return cls(session_dir)
+        return inst
     
     def log_session_metadata(
         self,
@@ -294,6 +310,10 @@ class TurnLogger:
         content = "\n".join(lines)
         filepath.write_text(content, encoding="utf-8")
         logger.debug("Wrote %s", filepath)
+
+        # Mirror to GCS (fire-and-forget)
+        self._gcs_logger.upload_turn_log(filepath, content)
+
         return filepath
     
     def log_thinking(self, content: str, label: str = "") -> Path:

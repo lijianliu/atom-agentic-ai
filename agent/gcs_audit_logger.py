@@ -5,10 +5,10 @@ Buffers events in-memory as JSONL records per turn.  Each turn is flushed
 to its own GCS blob when ``flush_turn()`` is called.
 
 GCS blob path:
-    {prefix}/{date}/{username}-{time}/{username}_{session_ts}-{turn}-{prompt_slug}.jsonl
+    {prefix}/{date}/{username}/{time}/{username}_{session_ts}-{turn}-{prompt_slug}.jsonl
 
     Example:
-    logs/2026-03-29/jdoe-19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
+    logs/2026-03-29/jdoe/19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
 
 Session ID = ``{username}-{session_ts}`` (stable for the whole ``./run.sh``
 lifetime — no UUID needed).
@@ -122,6 +122,17 @@ def _slugify_prompt(text: str, max_len: int = PROMPT_SLUG_MAX) -> str:
     slug = re.sub(r"_+", "_", slug).strip("_")
     slug = slug[:max_len].rstrip("_")
     return slug or "prompt"
+
+
+# ---------------------------------------------------------------------------
+# Null logger (no-op stand-in when GCS is not configured)
+# ---------------------------------------------------------------------------
+
+class NullGCSLogger:
+    """No-op logger used when GCS is not configured."""
+
+    def upload_turn_log(self, filepath, content):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -346,23 +357,45 @@ class GCSLogger:
         """Build the blob path for a specific turn.
 
         Format:
-            {prefix}/{date}/{username}-{time}/{username}_{session_ts}-{turn}-{slug}.jsonl
+            {prefix}/{date}/{username}/{time}/{username}_{session_ts}-{turn}-{slug}.jsonl
 
         Example:
-            logs/2026-03-29/jdoe-19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
+            logs/2026-03-29/jdoe/19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
         """
         # session_ts = "2026-03-29T19-14-11.422Z"
         date_part, time_part = self._session_ts.split("T", 1)
         date_folder = date_part                             # 2026-03-29
-        session_folder = f"{self.username}-{time_part}"     # jdoe-19-14-11.422Z
 
         filename = (
             f"{self.username}-{self._session_ts}-{turn:03d}-{slug}.jsonl"
         )
-        parts = [date_folder, session_folder, filename]
+        parts = [date_folder, self.username, time_part, filename]
         if self.prefix:
             parts.insert(0, self.prefix)
         return "/".join(parts)
+
+    def upload_turn_log(self, filepath: "Path", content: str) -> None:
+        """Upload a turn log file to GCS (fire-and-forget).
+
+        Mirrors the local turn-log directory structure into the same
+        GCS prefix used by this logger.
+        """
+        if not _GCS_AVAILABLE:
+            return
+        try:
+            from logging_config import LOG_DIR
+            relative = filepath.relative_to(LOG_DIR)
+            if self.prefix:
+                blob_path = f"{self.prefix}/{relative}"
+            else:
+                blob_path = str(relative)
+            client = _gcs_client_factory.get_client()
+            bucket = client.bucket(self.bucket_name)
+            blob = bucket.blob(blob_path)
+            blob.upload_from_string(content, content_type="text/plain")
+            logger.debug("GCS turn-log uploaded gs://%s/%s", self.bucket_name, blob_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GCS turn-log upload failed for %s: %s", filepath.name, exc)
 
     def _write_blob(self, blob_path: str, lines: list[str]) -> None:
         """Sync GCS upload — runs inside a thread-pool executor."""
