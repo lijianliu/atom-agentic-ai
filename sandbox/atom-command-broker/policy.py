@@ -166,6 +166,10 @@ class PolicyEngine:
         if not tool_policy.get("enabled", True):
             return {"allowed": False, "reason": f"Tool '{tool}' is disabled by policy"}
 
+        # No args = tool will show its own usage/help, allow it
+        if not argv:
+            return {"allowed": True, "reason": "ok"}
+
         # --- gsutil ---
         if tool == "gsutil":
             return self._evaluate_gsutil(argv, tool_policy)
@@ -183,9 +187,6 @@ class PolicyEngine:
 
     # ---- gsutil policy ----
     def _evaluate_gsutil(self, argv: list[str], policy: dict) -> dict:
-        if not argv:
-            return {"allowed": False, "reason": "Empty gsutil command"}
-
         # Find the subcommand (first non-flag arg)
         subcmd = None
         for a in argv:
@@ -231,9 +232,6 @@ class PolicyEngine:
 
     # ---- gcloud policy ----
     def _evaluate_gcloud(self, argv: list[str], policy: dict) -> dict:
-        if not argv:
-            return {"allowed": False, "reason": "Empty gcloud command"}
-
         non_flag = [a for a in argv if not a.startswith("-")]
         cmd_str = " ".join(non_flag)
 

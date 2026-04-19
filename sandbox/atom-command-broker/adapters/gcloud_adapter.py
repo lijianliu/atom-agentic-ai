@@ -27,8 +27,7 @@ class GcloudAdapter(BaseAdapter):
         }
 
     def validate(self, argv: list[str]) -> str | None:
-        if not argv:
-            return "gcloud requires at least a subcommand"
+        # No args is fine — gcloud prints its own usage/help
         return None
 
     def normalize_args(self, argv: list[str]) -> list[str]:

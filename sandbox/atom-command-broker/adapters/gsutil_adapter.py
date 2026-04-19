@@ -26,16 +26,7 @@ class GsutilAdapter(BaseAdapter):
         }
 
     def validate(self, argv: list[str]) -> str | None:
-        if not argv:
-            return "gsutil requires at least a subcommand"
-        # Find the subcommand (first non-flag arg)
-        subcmd = None
-        for a in argv:
-            if not a.startswith("-"):
-                subcmd = a
-                break
-        if subcmd is None:
-            return "No subcommand found in gsutil arguments"
+        # No args is fine — gsutil prints its own usage/help
         return None
 
     def normalize_args(self, argv: list[str]) -> list[str]:
