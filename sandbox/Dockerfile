@@ -39,7 +39,7 @@ RUN groupadd -g 1000 sandbox && \
     useradd -u 1000 -g sandbox -m -s /bin/bash sandbox
 
 # 2. Workspace mount point (actual storage is a bind-mount from host
-#    at /tmp/atom-workspace, shared with the broker for file operations)
+#    at /workspace, shared with the broker for file operations)
 RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
 
 # 3. Strip all setuid/setgid bits
@@ -55,8 +55,10 @@ RUN pip install --no-cache-dir \
 # 5. Remove package managers
 RUN rm -f /usr/bin/apt-get /usr/bin/apt /usr/bin/dpkg
 
-# 6. Restrictive umask
-RUN echo 'umask 0077' >> /home/sandbox/.bashrc
+# 6. Restrictive umask + command aliases via broker
+RUN echo 'umask 0077' >> /home/sandbox/.bashrc && \
+    echo 'alias gsutil="atom-command-proxy gsutil"' >> /home/sandbox/.bashrc && \
+    echo 'alias gcloud="atom-command-proxy gcloud"' >> /home/sandbox/.bashrc
 
 # ---------------------------------------------------------------------------
 # MCP server
