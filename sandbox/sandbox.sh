@@ -65,10 +65,10 @@ fi
 # atom-command-broker socket directory
 BROKER_SOCK_DIR="${ATOM_BROKER_SOCKET_DIR:-/tmp/atom-command-proxy}"
 
-# Shared workspace: host dir bind-mounted as /workspace in container
-# so broker-executed file operations (gsutil cp, gcloud storage cp)
-# land where the container can see them.
-SHARED_WORKSPACE="${ATOM_SHARED_WORKSPACE:-/tmp/atom-workspace}"
+# Shared workspace: same path (/workspace) on both host and container.
+# The broker executes commands on the host using the same /workspace path
+# the container sees, so no path rewriting is needed.
+SHARED_WORKSPACE="${ATOM_SHARED_WORKSPACE:-/workspace}"
 
 SECCOMP_PROFILE="${SCRIPT_DIR}/seccomp-strict.json"
 
@@ -169,16 +169,16 @@ cmd_start() {
     mkdir -p "${BROKER_SOCK_DIR}"
     chmod 755 "${BROKER_SOCK_DIR}"
 
-    # Create shared workspace directory
-    mkdir -p "${SHARED_WORKSPACE}"
-    chmod 777 "${SHARED_WORKSPACE}"
+    # Create shared workspace directory (same path on host and container)
+    sudo mkdir -p "${SHARED_WORKSPACE}"
+    sudo chmod 777 "${SHARED_WORKSPACE}"
 
     echo ""
     echo "🔒 Starting sandbox: ${CONTAINER_NAME}"
     echo "   Platform:   ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
     echo "   MCP:        http://127.0.0.1:${port}/sse"
     echo "   Broker:     ${BROKER_SOCK_DIR} (mounted → /tmp/atom-command-proxy)"
-    echo "   Workspace:  ${SHARED_WORKSPACE} (mounted → /workspace)"
+    echo "   Workspace:  ${SHARED_WORKSPACE} (same path on host and container)"
     echo "   Security:   cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
     echo "   Limits:     memory=2g | cpus=2 | pids=256"
     echo ""
@@ -236,7 +236,7 @@ cmd_status() {
         echo "   Port:      ${port}"
         echo "   MCP:       http://127.0.0.1:${DEFAULT_PORT}/sse"
         echo "   Broker:    ${BROKER_SOCK_DIR} → /tmp/atom-command-proxy"
-        echo "   Workspace: ${SHARED_WORKSPACE} → /workspace"
+        echo "   Workspace: ${SHARED_WORKSPACE}"
     else
         echo "❌ ${CONTAINER_NAME} is not running"
     fi
@@ -262,8 +262,8 @@ cmd_run() {
     ensure_docker
     ensure_image
     mkdir -p "${BROKER_SOCK_DIR}"
-    mkdir -p "${SHARED_WORKSPACE}"
-    chmod 777 "${SHARED_WORKSPACE}"
+    sudo mkdir -p "${SHARED_WORKSPACE}"
+    sudo chmod 777 "${SHARED_WORKSPACE}"
 
     echo "🔒 Running in fresh sandbox: $*"
     docker run \

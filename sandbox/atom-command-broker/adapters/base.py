@@ -2,31 +2,6 @@
 import os
 from abc import ABC, abstractmethod
 
-# Path mapping: container path → host path.
-# The container sees /workspace, but the broker on the host needs to
-# use the actual host directory that is bind-mounted as /workspace.
-# Set via ATOM_SHARED_WORKSPACE env var (default: /tmp/atom-workspace).
-CONTAINER_WORKSPACE = "/workspace"
-HOST_WORKSPACE = os.environ.get("ATOM_SHARED_WORKSPACE", "/tmp/atom-workspace")
-
-
-def rewrite_container_paths(argv: list[str]) -> list[str]:
-    """Rewrite container-side paths to host-side paths in command arguments.
-
-    The container's /workspace is bind-mounted from the host's
-    ATOM_SHARED_WORKSPACE directory. When the broker executes commands
-    on the host, local file paths must point to the host-side location.
-    """
-    result = []
-    for arg in argv:
-        if arg == CONTAINER_WORKSPACE:
-            result.append(HOST_WORKSPACE)
-        elif arg.startswith(CONTAINER_WORKSPACE + "/"):
-            result.append(HOST_WORKSPACE + arg[len(CONTAINER_WORKSPACE):])
-        else:
-            result.append(arg)
-    return result
-
 
 class BaseAdapter(ABC):
     """Abstract base class for tool adapters.
@@ -84,10 +59,9 @@ class BaseAdapter(ABC):
     def build_command(self, executable: str, argv: list[str]) -> list[str]:
         """Build the full command to execute.
 
-        Default: [executable] + argv, with container paths rewritten
-        to host paths.
+        Default: [executable] + argv
         """
-        return [executable] + rewrite_container_paths(argv)
+        return [executable] + argv
 
     def build_env(self, tool_policy: dict | None) -> dict:
         """Build a controlled environment for command execution.
