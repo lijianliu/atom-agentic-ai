@@ -70,19 +70,35 @@ Connect your MCP client to: `http://127.0.0.1:9100/sse` (default port)
 
 Test it with: `python3 sandbox/test-mcp.py` (or `--port PORT` for a custom port)
 
-## gsutil Proxy
+## Command Broker (atom-command-proxy / atom-command-broker)
 
-The sandbox has no credentials or network access. gsutil commands are forwarded
-via Unix socket to a proxy running on the host.
+The sandbox has no credentials or network access. Host-side commands (gsutil,
+gcloud, Kafka CLI tools) are forwarded via Unix socket to **atom-command-broker**
+running on the host.
 
 ```bash
-./gsutil-proxy-ctl.sh start    # start proxy
-./gsutil-proxy-ctl.sh stop     # stop proxy
-./gsutil-proxy-ctl.sh status   # check status
+./atom-command-broker/broker-ctl.sh start     # start broker
+./atom-command-broker/broker-ctl.sh stop      # stop broker
+./atom-command-broker/broker-ctl.sh status    # check status
+./atom-command-broker/broker-ctl.sh restart   # restart (no container restart needed)
 ```
 
-The proxy can be started or restarted at any time without restarting the
-container. See [`docs/proxy-design.md`](../docs/proxy-design.md) for design details.
+Inside the container, use `atom-command-proxy` to invoke host tools:
+
+```bash
+atom-command-proxy gsutil ls gs://my-bucket
+atom-command-proxy gcloud storage buckets list
+atom-command-proxy kafka-get-offsets --bootstrap-server host:9092 --topic t
+atom-command-proxy discover    # list available tools
+atom-command-proxy health      # check broker health
+```
+
+Backward-compatible shims (`gsutil`, `gcloud`) are installed so existing code
+works without changes.
+
+The broker can be started or restarted at any time without restarting the
+container. See [`docs/command-proxy-broker-design.md`](../docs/command-proxy-broker-design.md)
+for full architecture, protocol, and policy documentation.
 
 ## What can the container NOT do?
 

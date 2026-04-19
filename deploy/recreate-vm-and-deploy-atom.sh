@@ -267,15 +267,17 @@ else
     warn "No system_prompt.md found at ${LOCAL_PROMPT} — agent will use default prompt"
 fi
 
-LOCAL_POLICY="$HOME/.config/atom-agentic-ai/gsutil-policy.json"
-if [ -f "$LOCAL_POLICY" ]; then
+# Copy broker policy (new atom-command-broker format)
+LOCAL_BROKER_POLICY="$HOME/.config/atom-agentic-ai/broker-policy.json"
+if [ -f "$LOCAL_BROKER_POLICY" ]; then
     scp $SSH_OPTS \
-        "$LOCAL_POLICY" \
-        "${REMOTE_USER}@${INTERNAL_IP}:~/.config/atom-agentic-ai/gsutil-policy.json"
-    ok "gsutil-policy.json copied"
+        "$LOCAL_BROKER_POLICY" \
+        "${REMOTE_USER}@${INTERNAL_IP}:~/.config/atom-agentic-ai/broker-policy.json"
+    ok "broker-policy.json copied"
 else
-    warn "No gsutil-policy.json found at ${LOCAL_POLICY} — proxy will use sandbox default"
+    warn "No broker-policy.json found at ${LOCAL_BROKER_POLICY} — broker will use built-in defaults"
 fi
+
 
 # ── Step 9: Install Python deps on VM ──────────────────────────────────────────────────
 step "9️⃣" "Installing Python dependencies on VM..."

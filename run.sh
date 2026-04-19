@@ -4,7 +4,8 @@
 # =============================================================================
 # This script:
 #   1. Ensures the hardened Docker MCP sandbox is running
-#   2. Starts the agent that connects to the MCP server
+#   2. Starts atom-command-broker (host-side command execution engine)
+#   3. Starts the agent that connects to the MCP server
 #
 # Usage:
 #   ./run.sh                     # New auto-named session
@@ -77,10 +78,10 @@ fi
 if [ "$ROOT_MODE" = true ]; then
   echo "⚠️  ROOT MODE: Skipping sandbox & proxy, using local tools directly"
 elif [ "$NO_SANDBOX" = false ]; then
-  # ---- Restart gsutil proxy (needed for sandbox GCS access) ----
-  echo "🔄 Restarting gsutil proxy..."
-  "${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" stop 2>/dev/null || true
-  "${SCRIPT_DIR}/sandbox/gsutil-proxy-ctl.sh" start
+  # ---- Restart atom-command-broker (replaces old gsutil-proxy) ----
+  echo "🔄 Restarting atom-command-broker..."
+  "${SCRIPT_DIR}/sandbox/atom-command-broker/broker-ctl.sh" stop 2>/dev/null || true
+  "${SCRIPT_DIR}/sandbox/atom-command-broker/broker-ctl.sh" start
 
   # ---- Start hardened Docker sandbox if not running ----
   CONTAINER_NAME="sandbox-mcp"

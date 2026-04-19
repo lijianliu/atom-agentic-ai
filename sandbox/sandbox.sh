@@ -62,7 +62,8 @@ else
     TMPFS_OPTS="rw,noexec,nosuid"
 fi
 
-GSUTIL_SOCK_DIR="/tmp/gsutil-proxy"
+# atom-command-broker socket directory (replaces old gsutil-proxy dir)
+BROKER_SOCK_DIR="${ATOM_BROKER_SOCKET_DIR:-/tmp/atom-command-proxy}"
 SECCOMP_PROFILE="${SCRIPT_DIR}/seccomp-strict.json"
 
 # ---------------------------------------------------------------------------
@@ -109,34 +110,6 @@ do_build() {
         -t "${IMAGE_NAME}" \
         "${SCRIPT_DIR}"
     echo "✅ Image built: ${IMAGE_NAME}"
-}
-
-gsutil_mount() {
-    mkdir -p "${GSUTIL_SOCK_DIR}"
-    echo "-v ${GSUTIL_SOCK_DIR}:/tmp/gsutil-proxy"
-}
-
-base_docker_flags() {
-    local port="$1"
-    echo "\
-        --platform ${DOCKER_PLATFORM} \
-        --log-driver=json-file \
-        --user 1000:1000 \
-        --cap-drop=ALL \
-        --security-opt=no-new-privileges:true \
-        --security-opt seccomp=${SECCOMP_PROFILE} \
-        --read-only \
-        --tmpfs /tmp:${TMPFS_OPTS},size=256m \
-        --tmpfs /run:${TMPFS_OPTS},size=64m \
-        --tmpfs /workspace:rw,uid=1000,gid=1000,size=1g \
-        --pids-limit=256 \
-        --memory=2g \
-        --memory-swap=2g \
-        --cpus=2 \
-        --ipc=private \
-        --ulimit nproc=512:512 \
-        --ulimit fsize=104857600:104857600 \
-        --ulimit nofile=1024:2048"
 }
 
 # ---------------------------------------------------------------------------
@@ -186,14 +159,17 @@ cmd_start() {
         docker rm -f "${CONTAINER_NAME}" &>/dev/null
     fi
 
-    mkdir -p "${GSUTIL_SOCK_DIR}"
+    # Create socket directory for atom-command-broker
+    mkdir -p "${BROKER_SOCK_DIR}"
+    chmod 755 "${BROKER_SOCK_DIR}"
 
     echo ""
     echo "🔒 Starting sandbox: ${CONTAINER_NAME}"
-    echo "   Platform: ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
-    echo "   MCP:      http://127.0.0.1:${port}/sse"
-    echo "   Security: cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
-    echo "   Limits:   memory=2g | cpus=2 | pids=256"
+    echo "   Platform:  ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
+    echo "   MCP:       http://127.0.0.1:${port}/sse"
+    echo "   Broker:    ${BROKER_SOCK_DIR} (mounted → /tmp/atom-command-proxy)"
+    echo "   Security:  cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
+    echo "   Limits:    memory=2g | cpus=2 | pids=256"
     echo ""
 
     docker run \
@@ -219,7 +195,7 @@ cmd_start() {
         --ulimit nproc=512:512 \
         --ulimit fsize=104857600:104857600 \
         --ulimit nofile=1024:2048 \
-        -v "${GSUTIL_SOCK_DIR}:/tmp/gsutil-proxy" \
+        -v "${BROKER_SOCK_DIR}:/tmp/atom-command-proxy" \
         "${IMAGE_NAME}" \
         python3 /opt/mcp/mcp_server.py --port "${port}" --transport sse
 
@@ -248,6 +224,7 @@ cmd_status() {
         echo "   Started: ${uptime}"
         echo "   Port:    ${port}"
         echo "   MCP:     http://127.0.0.1:${DEFAULT_PORT}/sse"
+        echo "   Broker:  ${BROKER_SOCK_DIR} → /tmp/atom-command-proxy"
     else
         echo "❌ ${CONTAINER_NAME} is not running"
     fi
@@ -272,7 +249,7 @@ cmd_run() {
 
     ensure_docker
     ensure_image
-    mkdir -p "${GSUTIL_SOCK_DIR}"
+    mkdir -p "${BROKER_SOCK_DIR}"
 
     echo "🔒 Running in fresh sandbox: $*"
     docker run \
@@ -298,7 +275,7 @@ cmd_run() {
         --ulimit nproc=512:512 \
         --ulimit fsize=104857600:104857600 \
         --ulimit nofile=1024:2048 \
-        -v "${GSUTIL_SOCK_DIR}:/tmp/gsutil-proxy" \
+        -v "${BROKER_SOCK_DIR}:/tmp/atom-command-proxy" \
         "${IMAGE_NAME}" "$@"
 }
 

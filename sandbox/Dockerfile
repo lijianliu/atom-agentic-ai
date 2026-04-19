@@ -67,12 +67,12 @@ ENV MCP_SAFE_ROOT=/workspace
 ENV MCP_CMD_TIMEOUT=120
 
 # ---------------------------------------------------------------------------
-# gsutil proxy wrapper
-# Thin client that forwards gsutil commands to the host via Unix socket.
-# Socket path auto-detected at runtime (see wrapper script).
+# atom-command-proxy — generic thin command relay
+# Sends structured requests to atom-command-broker on the host via Unix socket.
+# Socket path auto-detected at runtime (mounted socket directory).
 # ---------------------------------------------------------------------------
-COPY gsutil-wrapper.sh /usr/local/bin/gsutil
-RUN chmod +x /usr/local/bin/gsutil
+COPY atom-command-proxy.py /usr/local/bin/atom-command-proxy
+RUN chmod +x /usr/local/bin/atom-command-proxy
 
 # ---------------------------------------------------------------------------
 # Runtime
