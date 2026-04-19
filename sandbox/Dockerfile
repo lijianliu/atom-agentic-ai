@@ -6,7 +6,7 @@
 # Security layers (applied at run time via sandbox.sh):
 #   --cap-drop=ALL  |  --no-new-privileges  |  --read-only rootfs
 #   --network=none  |  custom seccomp        |  PID/mem/cpu limits
-#   --tmpfs /tmp,/run,/workspace             |  UID 1000 (non-root)
+#   --tmpfs /tmp,/run  |  bind-mount /workspace  |  UID 1000 (non-root)
 
 FROM python:3.13-slim-bookworm
 
@@ -38,7 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd -g 1000 sandbox && \
     useradd -u 1000 -g sandbox -m -s /bin/bash sandbox
 
-# 2. Workspace directory
+# 2. Workspace mount point (actual storage is a bind-mount from host
+#    at /tmp/atom-workspace, shared with the broker for file operations)
 RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
 
 # 3. Strip all setuid/setgid bits

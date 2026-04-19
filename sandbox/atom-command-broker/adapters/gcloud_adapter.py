@@ -1,6 +1,6 @@
 """gcloud adapter for atom-command-broker."""
 import os
-from .base import BaseAdapter
+from .base import BaseAdapter, rewrite_container_paths
 
 
 class GcloudAdapter(BaseAdapter):
@@ -44,7 +44,7 @@ class GcloudAdapter(BaseAdapter):
 
     def build_command(self, executable: str, argv: list[str]) -> list[str]:
         """Build gcloud command, injecting policy-required flags."""
-        cmd = [executable] + argv
+        cmd = [executable] + rewrite_container_paths(argv)
         # Ensure --format=json is not stripped; add --quiet if not present
         if "--quiet" not in argv and "-q" not in argv:
             cmd.append("--quiet")

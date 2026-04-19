@@ -62,8 +62,14 @@ else
     TMPFS_OPTS="rw,noexec,nosuid"
 fi
 
-# atom-command-broker socket directory (replaces old gsutil-proxy dir)
+# atom-command-broker socket directory
 BROKER_SOCK_DIR="${ATOM_BROKER_SOCKET_DIR:-/tmp/atom-command-proxy}"
+
+# Shared workspace: host dir bind-mounted as /workspace in container
+# so broker-executed file operations (gsutil cp, gcloud storage cp)
+# land where the container can see them.
+SHARED_WORKSPACE="${ATOM_SHARED_WORKSPACE:-/tmp/atom-workspace}"
+
 SECCOMP_PROFILE="${SCRIPT_DIR}/seccomp-strict.json"
 
 # ---------------------------------------------------------------------------
@@ -163,13 +169,18 @@ cmd_start() {
     mkdir -p "${BROKER_SOCK_DIR}"
     chmod 755 "${BROKER_SOCK_DIR}"
 
+    # Create shared workspace directory
+    mkdir -p "${SHARED_WORKSPACE}"
+    chmod 777 "${SHARED_WORKSPACE}"
+
     echo ""
     echo "🔒 Starting sandbox: ${CONTAINER_NAME}"
-    echo "   Platform:  ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
-    echo "   MCP:       http://127.0.0.1:${port}/sse"
-    echo "   Broker:    ${BROKER_SOCK_DIR} (mounted → /tmp/atom-command-proxy)"
-    echo "   Security:  cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
-    echo "   Limits:    memory=2g | cpus=2 | pids=256"
+    echo "   Platform:   ${DOCKER_PLATFORM} (${OS} / ${HOST_ARCH})"
+    echo "   MCP:        http://127.0.0.1:${port}/sse"
+    echo "   Broker:     ${BROKER_SOCK_DIR} (mounted → /tmp/atom-command-proxy)"
+    echo "   Workspace:  ${SHARED_WORKSPACE} (mounted → /workspace)"
+    echo "   Security:   cap-drop=ALL | no-new-privileges | read-only rootfs | seccomp"
+    echo "   Limits:     memory=2g | cpus=2 | pids=256"
     echo ""
 
     docker run \
@@ -185,7 +196,7 @@ cmd_start() {
         --read-only \
         --tmpfs "/tmp:${TMPFS_OPTS},size=256m" \
         --tmpfs "/run:${TMPFS_OPTS},size=64m" \
-        --tmpfs "/workspace:rw,uid=1000,gid=1000,size=1g" \
+        -v "${SHARED_WORKSPACE}:/workspace" \
         -p "127.0.0.1:${port}:${port}" \
         --pids-limit=256 \
         --memory=2g \
@@ -221,10 +232,11 @@ cmd_status() {
         local port
         port=$(docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || echo 'unknown')
         echo "✅ ${CONTAINER_NAME} is running"
-        echo "   Started: ${uptime}"
-        echo "   Port:    ${port}"
-        echo "   MCP:     http://127.0.0.1:${DEFAULT_PORT}/sse"
-        echo "   Broker:  ${BROKER_SOCK_DIR} → /tmp/atom-command-proxy"
+        echo "   Started:   ${uptime}"
+        echo "   Port:      ${port}"
+        echo "   MCP:       http://127.0.0.1:${DEFAULT_PORT}/sse"
+        echo "   Broker:    ${BROKER_SOCK_DIR} → /tmp/atom-command-proxy"
+        echo "   Workspace: ${SHARED_WORKSPACE} → /workspace"
     else
         echo "❌ ${CONTAINER_NAME} is not running"
     fi
@@ -250,6 +262,8 @@ cmd_run() {
     ensure_docker
     ensure_image
     mkdir -p "${BROKER_SOCK_DIR}"
+    mkdir -p "${SHARED_WORKSPACE}"
+    chmod 777 "${SHARED_WORKSPACE}"
 
     echo "🔒 Running in fresh sandbox: $*"
     docker run \
@@ -265,7 +279,7 @@ cmd_run() {
         --read-only \
         --tmpfs "/tmp:${TMPFS_OPTS},size=256m" \
         --tmpfs "/run:${TMPFS_OPTS},size=64m" \
-        --tmpfs "/workspace:rw,uid=1000,gid=1000,size=1g" \
+        -v "${SHARED_WORKSPACE}:/workspace" \
         --network=none \
         --pids-limit=256 \
         --memory=2g \

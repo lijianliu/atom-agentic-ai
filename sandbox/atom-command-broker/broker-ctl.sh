@@ -15,6 +15,7 @@ BROKER_SCRIPT="${SCRIPT_DIR}/broker.py"
 SOCKET_DIR="${ATOM_BROKER_SOCKET_DIR:-/tmp/atom-command-proxy}"
 SOCKET_NAME="${ATOM_BROKER_SOCKET_NAME:-command-broker.sock}"
 SOCKET_PATH="${SOCKET_DIR}/${SOCKET_NAME}"
+SHARED_WORKSPACE="${ATOM_SHARED_WORKSPACE:-/tmp/atom-workspace}"
 PID_FILE="/tmp/atom-command-broker.pid"
 LOG_FILE="${ATOM_BROKER_LOG:-/tmp/atom-command-broker.log}"
 AUDIT_LOG="${ATOM_BROKER_AUDIT_LOG:-/tmp/atom-command-broker-audit.log}"
@@ -42,7 +43,16 @@ case "${1:-}" in
         echo "🚀 Starting atom-command-broker..."
         mkdir -p "${SOCKET_DIR}"
         chmod 755 "${SOCKET_DIR}"
+
+        # Ensure shared workspace exists for file operations (gsutil cp, etc.)
+        mkdir -p "${SHARED_WORKSPACE}"
+        chmod 777 "${SHARED_WORKSPACE}"
+
         touch "${LOG_FILE}" "${AUDIT_LOG}"
+
+        # Export ATOM_SHARED_WORKSPACE so the broker process inherits it
+        # for container→host path rewriting in adapters.
+        export ATOM_SHARED_WORKSPACE="${SHARED_WORKSPACE}"
 
         nohup python3 "${BROKER_SCRIPT}" \
             --socket-dir "${SOCKET_DIR}" \
@@ -58,6 +68,7 @@ case "${1:-}" in
             if [ -S "${SOCKET_PATH}" ]; then
                 echo "✅ Broker started (PID $(cat "${PID_FILE}"))"
                 echo "   Socket:    ${SOCKET_PATH}"
+                echo "   Workspace: ${SHARED_WORKSPACE} (→ /workspace in container)"
                 echo "   Log:       ${LOG_FILE}"
                 echo "   Audit log: ${AUDIT_LOG}"
                 break
@@ -96,9 +107,10 @@ case "${1:-}" in
     status)
         if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
             echo "✅ Broker running (PID $(cat "${PID_FILE}"))"
-            echo "   Socket: $([ -S "${SOCKET_PATH}" ] && echo 'exists ✅' || echo 'MISSING ❌')"
-            echo "   Log:    ${LOG_FILE}"
-            echo "   Audit:  ${AUDIT_LOG}"
+            echo "   Socket:    $([ -S "${SOCKET_PATH}" ] && echo 'exists ✅' || echo 'MISSING ❌')"
+            echo "   Workspace: ${SHARED_WORKSPACE}"
+            echo "   Log:       ${LOG_FILE}"
+            echo "   Audit:     ${AUDIT_LOG}"
         else
             echo "❌ Broker not running"
         fi
