@@ -37,6 +37,38 @@
       "max_timeout_sec": 120,
       "max_output_bytes": 10485760
     },
+    "hadoop": {
+      "enabled": true,
+      "allowed_top_commands": ["fs", "classpath", "version", "envvars", "checknative"],
+      "allowed_fs_subcommands": [
+        "cat", "checksum", "count", "df", "du", "find", "getfacl", "getfattr",
+        "getmerge", "head", "ls", "lsr", "stat", "tail", "test", "text", "usage",
+        "cp", "get", "copyToLocal", "mkdir", "put", "copyFromLocal",
+        "appendToFile", "mv", "rm", "rmdir", "touchz",
+        "chmod", "chown", "chgrp", "setrep", "setfacl", "setfattr"
+      ],
+      "read_only": false,
+      "allowed_paths": [],
+      "blocked_flags": [],
+      "max_timeout_sec": 300,
+      "max_output_bytes": 10485760
+    },
+    "hdfs": {
+      "enabled": true,
+      "allowed_top_commands": ["dfs", "fsck", "getconf", "groups", "lsSnapshottableDir", "snapshotDiff", "version", "envvars", "classpath"],
+      "allowed_fs_subcommands": [
+        "cat", "checksum", "count", "df", "du", "find", "getfacl", "getfattr",
+        "getmerge", "head", "ls", "lsr", "stat", "tail", "test", "text", "usage",
+        "cp", "get", "copyToLocal", "mkdir", "put", "copyFromLocal",
+        "appendToFile", "mv", "rm", "rmdir", "touchz",
+        "chmod", "chown", "chgrp", "setrep", "setfacl", "setfattr"
+      ],
+      "read_only": false,
+      "allowed_paths": [],
+      "blocked_flags": [],
+      "max_timeout_sec": 300,
+      "max_output_bytes": 10485760
+    },
     "kafka-broker-api-versions": {
       "enabled": true,
       "allowed_bootstrap_servers": [],

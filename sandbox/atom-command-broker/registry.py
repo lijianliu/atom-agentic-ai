@@ -24,6 +24,18 @@ _SEARCH_PATHS = {
         "/usr/local/bin/gcloud",
         "/snap/bin/gcloud",
     ],
+    "hadoop": [
+        "/usr/bin/hadoop",
+        "/usr/local/bin/hadoop",
+        "/usr/lib/hadoop/bin/hadoop",
+        "/opt/hadoop/bin/hadoop",
+    ],
+    "hdfs": [
+        "/usr/bin/hdfs",
+        "/usr/local/bin/hdfs",
+        "/usr/lib/hadoop-hdfs/bin/hdfs",
+        "/opt/hadoop/bin/hdfs",
+    ],
     "kafka-broker-api-versions": [
         "/usr/bin/kafka-broker-api-versions",
         "/opt/kafka/bin/kafka-broker-api-versions.sh",

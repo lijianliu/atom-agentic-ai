@@ -58,7 +58,9 @@ RUN rm -f /usr/bin/apt-get /usr/bin/apt /usr/bin/dpkg
 # 6. Restrictive umask + command aliases via broker
 RUN echo 'umask 0077' >> /home/sandbox/.bashrc && \
     echo 'alias gsutil="atom-command-proxy gsutil"' >> /home/sandbox/.bashrc && \
-    echo 'alias gcloud="atom-command-proxy gcloud"' >> /home/sandbox/.bashrc
+    echo 'alias gcloud="atom-command-proxy gcloud"' >> /home/sandbox/.bashrc && \
+    echo 'alias hadoop="atom-command-proxy hadoop"' >> /home/sandbox/.bashrc && \
+    echo 'alias hdfs="atom-command-proxy hdfs"' >> /home/sandbox/.bashrc
 
 # ---------------------------------------------------------------------------
 # MCP server

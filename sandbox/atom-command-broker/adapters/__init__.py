@@ -13,6 +13,7 @@ from .base import BaseAdapter
 from .gsutil_adapter import GsutilAdapter
 from .gcloud_adapter import GcloudAdapter
 from .kafka_adapter import KafkaAdapter, KafkaToolAdapter
+from .hadoop_adapter import HadoopAdapter
 
 # Adapter registry: maps logical tool name → adapter instance
 _ADAPTER_REGISTRY: dict[str, BaseAdapter] = {}
@@ -31,6 +32,10 @@ def _register_defaults():
     kafka = KafkaAdapter()
     for tool_name in kafka.supported_tools():
         _ADAPTER_REGISTRY[tool_name] = KafkaToolAdapter(tool_name, kafka)
+
+    # Hadoop / HDFS — each gets its own adapter instance
+    _ADAPTER_REGISTRY["hadoop"] = HadoopAdapter("hadoop")
+    _ADAPTER_REGISTRY["hdfs"] = HadoopAdapter("hdfs")
 
 
 def get_adapter(tool: str) -> BaseAdapter | None:

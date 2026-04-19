@@ -12,6 +12,14 @@ from pathlib import Path
 logger = logging.getLogger("atom-command-broker.policy")
 
 # ---------------------------------------------------------------------------
+# Read-only fs/dfs subcommands (used by hadoop/hdfs policy evaluation)
+# ---------------------------------------------------------------------------
+_HADOOP_READ_ONLY_FS_SUBCOMMANDS = {
+    "cat", "checksum", "count", "df", "du", "find", "getfacl", "getfattr",
+    "getmerge", "head", "ls", "lsr", "stat", "tail", "test", "text", "usage",
+}
+
+# ---------------------------------------------------------------------------
 # Default built-in policy (used when no file is provided)
 # ---------------------------------------------------------------------------
 DEFAULT_POLICY: dict = {
@@ -51,6 +59,41 @@ DEFAULT_POLICY: dict = {
             "blocked_flags": ["--impersonate-service-account"],
             "force_flags": ["--quiet"],
             "max_timeout_sec": 120,
+            "max_output_bytes": 10485760,
+        },
+        "hadoop": {
+            "enabled": True,
+            "allowed_top_commands": ["fs", "classpath", "version", "envvars", "checknative"],
+            "allowed_fs_subcommands": [
+                "cat", "checksum", "count", "df", "du", "find", "getfacl", "getfattr",
+                "getmerge", "head", "ls", "lsr", "stat", "tail", "test", "text", "usage",
+                "cp", "get", "copyToLocal", "mkdir", "put", "copyFromLocal",
+                "appendToFile", "mv", "rm", "rmdir", "touchz",
+                "chmod", "chown", "chgrp", "setrep", "setfacl", "setfattr",
+            ],
+            "read_only": False,
+            "allowed_paths": [],
+            "blocked_flags": [],
+            "max_timeout_sec": 300,
+            "max_output_bytes": 10485760,
+        },
+        "hdfs": {
+            "enabled": True,
+            "allowed_top_commands": [
+                "dfs", "fsck", "getconf", "groups", "lsSnapshottableDir",
+                "snapshotDiff", "version", "envvars", "classpath",
+            ],
+            "allowed_fs_subcommands": [
+                "cat", "checksum", "count", "df", "du", "find", "getfacl", "getfattr",
+                "getmerge", "head", "ls", "lsr", "stat", "tail", "test", "text", "usage",
+                "cp", "get", "copyToLocal", "mkdir", "put", "copyFromLocal",
+                "appendToFile", "mv", "rm", "rmdir", "touchz",
+                "chmod", "chown", "chgrp", "setrep", "setfacl", "setfattr",
+            ],
+            "read_only": False,
+            "allowed_paths": [],
+            "blocked_flags": [],
+            "max_timeout_sec": 300,
             "max_output_bytes": 10485760,
         },
         "kafka-broker-api-versions": {
@@ -178,6 +221,10 @@ class PolicyEngine:
         if tool == "gcloud":
             return self._evaluate_gcloud(argv, tool_policy)
 
+        # --- hadoop / hdfs ---
+        if tool in ("hadoop", "hdfs"):
+            return self._evaluate_hadoop(tool, argv, tool_policy)
+
         # --- kafka tools ---
         if tool.startswith("kafka-"):
             return self._evaluate_kafka(tool, argv, tool_policy)
@@ -249,6 +296,112 @@ class PolicyEngine:
 
         blocked = policy.get("blocked_flags", [])
         for a in argv:
+            if a in blocked:
+                return {"allowed": False, "reason": f"Flag '{a}' blocked by policy"}
+
+        return {"allowed": True, "reason": "ok"}
+
+    # ---- hadoop / hdfs policy ----
+    def _evaluate_hadoop(self, tool: str, argv: list[str], policy: dict) -> dict:
+        """Evaluate hadoop / hdfs commands against policy.
+
+        Expected argv shapes:
+          hadoop: ["fs", "-ls", "/path"]  or  ["version"]
+          hdfs:   ["dfs", "-ls", "/path"] or  ["fsck", "/path"]
+        """
+        if not argv:
+            return {"allowed": True, "reason": "ok"}
+
+        top_cmd = argv[0]
+
+        # Check allowed top-level commands
+        allowed_top = policy.get("allowed_top_commands", [])
+        if allowed_top and top_cmd not in allowed_top:
+            return {
+                "allowed": False,
+                "reason": (
+                    f"{tool} top-level command '{top_cmd}' not allowed. "
+                    f"Permitted: {allowed_top}"
+                ),
+            }
+
+        # For fs/dfs subcommands, extract and validate the operation
+        fs_commands = {"fs", "dfs"}
+        if top_cmd in fs_commands and len(argv) > 1:
+            return self._evaluate_hadoop_fs(tool, argv[1:], policy)
+
+        # Blocked flags (global)
+        blocked = policy.get("blocked_flags", [])
+        for a in argv:
+            if a in blocked:
+                return {"allowed": False, "reason": f"Flag '{a}' blocked by policy"}
+
+        return {"allowed": True, "reason": "ok"}
+
+    def _evaluate_hadoop_fs(
+        self, tool: str, fs_argv: list[str], policy: dict
+    ) -> dict:
+        """Evaluate fs/dfs sub-commands like -ls, -cat, -cp, etc.
+
+        fs_argv is everything after 'fs' or 'dfs', e.g. ["-ls", "-R", "/path"].
+        """
+        # Find the fs subcommand (first arg starting with -)
+        fs_subcmd = None
+        for a in fs_argv:
+            if a.startswith("-"):
+                # Strip leading dash(es) to get the subcommand name
+                candidate = a.lstrip("-")
+                if candidate:
+                    fs_subcmd = candidate
+                    break
+
+        if not fs_subcmd:
+            # No subcommand — hadoop fs will show help
+            return {"allowed": True, "reason": "ok"}
+
+        # Check allowed fs subcommands
+        allowed_fs = policy.get("allowed_fs_subcommands", [])
+        if allowed_fs and fs_subcmd not in allowed_fs:
+            return {
+                "allowed": False,
+                "reason": (
+                    f"{tool} fs subcommand '-{fs_subcmd}' not allowed. "
+                    f"Permitted: {allowed_fs}"
+                ),
+            }
+
+        # read_only mode: block write subcommands
+        if policy.get("read_only", False):
+            if fs_subcmd not in _HADOOP_READ_ONLY_FS_SUBCOMMANDS:
+                return {
+                    "allowed": False,
+                    "reason": (
+                        f"{tool} fs subcommand '-{fs_subcmd}' is a write operation "
+                        f"and policy is set to read_only"
+                    ),
+                }
+
+        # Path restrictions
+        allowed_paths = policy.get("allowed_paths", [])
+        if allowed_paths:
+            # Collect all path-like arguments (non-flag args after subcmd)
+            paths = [a for a in fs_argv if not a.startswith("-")]
+            for p in paths:
+                matched = any(
+                    p.startswith(ap) for ap in allowed_paths
+                )
+                if not matched:
+                    return {
+                        "allowed": False,
+                        "reason": (
+                            f"Path '{p}' not under any allowed path prefix. "
+                            f"Permitted: {allowed_paths}"
+                        ),
+                    }
+
+        # Blocked flags
+        blocked = policy.get("blocked_flags", [])
+        for a in fs_argv:
             if a in blocked:
                 return {"allowed": False, "reason": f"Flag '{a}' blocked by policy"}
 
