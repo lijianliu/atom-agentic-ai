@@ -719,6 +719,14 @@ def main():
         ],
     )
 
+    # -----------------------------------------------------------------------
+    # SIGINT handling: The broker is a background daemon. It should NOT die
+    # when the parent shell (run.sh) or the agent receives Ctrl-C.  Only
+    # SIGTERM (sent by broker-ctl.sh stop) triggers a graceful shutdown.
+    # Ignore SIGINT so stray terminal signals don't kill the broker.
+    # -----------------------------------------------------------------------
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     # Policy
     policy_path = resolve_policy_path(args.policy)
     policy_engine = PolicyEngine(policy_path)
@@ -743,14 +751,13 @@ def main():
     socket_path = os.path.join(args.socket_dir, args.socket_name)
     server = BrokerServer(socket_path, broker)
 
-    # Graceful shutdown
+    # Graceful shutdown on SIGTERM only (broker-ctl.sh stop sends SIGTERM)
     def shutdown(signum, frame):
         logger.info("Received signal %d, shutting down...", signum)
         server.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
 
     server.start()
 

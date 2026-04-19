@@ -44,13 +44,27 @@ case "${1:-}" in
         chmod 755 "${SOCKET_DIR}"
         touch "${LOG_FILE}" "${AUDIT_LOG}"
 
-        nohup python3 "${BROKER_SCRIPT}" \
-            --socket-dir "${SOCKET_DIR}" \
-            --socket-name "${SOCKET_NAME}" \
-            --log-file "${LOG_FILE}" \
-            --audit-log "${AUDIT_LOG}" \
-            ${EXTRA_FLAGS} \
-            >> "${LOG_FILE}" 2>&1 &
+        # Use setsid to put the broker in its own session/process-group so
+        # Ctrl-C / SIGINT sent to the parent shell (run.sh / agent) does NOT
+        # propagate to the broker.  Falls back to nohup on platforms without
+        # setsid (e.g. macOS without coreutils).
+        if command -v setsid >/dev/null 2>&1; then
+            setsid python3 "${BROKER_SCRIPT}" \
+                --socket-dir "${SOCKET_DIR}" \
+                --socket-name "${SOCKET_NAME}" \
+                --log-file "${LOG_FILE}" \
+                --audit-log "${AUDIT_LOG}" \
+                ${EXTRA_FLAGS} \
+                >> "${LOG_FILE}" 2>&1 &
+        else
+            nohup python3 "${BROKER_SCRIPT}" \
+                --socket-dir "${SOCKET_DIR}" \
+                --socket-name "${SOCKET_NAME}" \
+                --log-file "${LOG_FILE}" \
+                --audit-log "${AUDIT_LOG}" \
+                ${EXTRA_FLAGS} \
+                >> "${LOG_FILE}" 2>&1 &
+        fi
         echo $! > "${PID_FILE}"
 
         # Wait up to 10s for the socket to appear
