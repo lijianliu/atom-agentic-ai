@@ -19,9 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-import anthropic
-import httpcore
-import httpx
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
@@ -243,47 +240,6 @@ def _sanitize_history(history: list) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_RECOVERABLE_TRANSPORT_ERRORS = (
-    httpx.RemoteProtocolError,
-    httpx.ReadError,
-    httpx.ReadTimeout,
-    httpx.WriteError,
-    httpx.ConnectError,
-    httpx.TimeoutException,
-    httpcore.RemoteProtocolError,
-    httpcore.ReadError,
-    httpcore.WriteError,
-    httpcore.ConnectError,
-    httpcore.ReadTimeout,
-    httpcore.WriteTimeout,
-    anthropic.APITimeoutError,
-    anthropic.APIConnectionError,
-)
-
-
-def _is_stream_connection_error(exc: BaseException) -> bool:
-    """Return True for recoverable streaming transport failures.
-
-    Walks the ``__cause__`` chain so that wrapper exceptions (e.g.
-    ``pydantic_ai.exceptions.ModelAPIError`` wrapping
-    ``anthropic.APITimeoutError`` wrapping ``httpx.ReadTimeout``)
-    are still recognised as recoverable.
-    """
-    current: BaseException | None = exc
-    while current is not None:
-        if isinstance(current, _RECOVERABLE_TRANSPORT_ERRORS):
-            return True
-        current = getattr(current, "__cause__", None)
-    return False
-
-
-def _print_stream_connection_error(exc: BaseException) -> None:
-    print(
-        "\n\033[43;30m⚠️ Stream connection dropped before the response finished.\033[0m "
-        f"{type(exc).__name__}: {exc}"
-    )
-
-
 def _gcs_uri_to_web_url(gcs_uri: str) -> str | None:
     """Convert a ``gs://`` URI to a web URL using environment variables.
 
@@ -448,25 +404,10 @@ async def run_repl(
 
             print("⏳ Thinking... (Ctrl+C to cancel)")
             cancelled = False
-            transport_failed = False
             loop = asyncio.get_running_loop()
 
-            # ── Agent turn ──────────────────────────────────────
-            # Exception handling is structured in two layers:
-            #
-            #   INNER (inside _run / async with agent.iter):
-            #     Sets flags (cancelled / transport_failed) so that
-            #     _finalize_turn() knows the outcome, then RE-RAISES.
-            #     No logging, no user messages — just flag + propagate.
-            #
-            #   OUTER (task boundary / await task):
-            #     Single authoritative handler for all exceptions.
-            #     Does logging, user messages, and decides whether to
-            #     swallow (recoverable) or re-raise (bug).
-            # ────────────────────────────────────────────────────
-
             async def _run() -> None:
-                nonlocal cancelled, transport_failed
+                nonlocal cancelled
 
                 # REPL-boundary sanitization only
                 _sanitize_history(message_history)
@@ -653,21 +594,15 @@ async def run_repl(
                                 if verbose:
                                     print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:1000]}")
 
-                    # ── Inner handlers: set flags for _finalize_turn, then re-raise.
-                    #    All logging/user-messaging happens at the OUTER task boundary.
                     except (asyncio.CancelledError, anyio.ClosedResourceError):
                         cancelled = True
-                        raise
-                    except Exception as e:
-                        if _is_stream_connection_error(e):
-                            transport_failed = True
                         raise
                     finally:
                         await _finalize_turn(
                             run,
                             message_history,
                             session_usage,
-                            cancelled or transport_failed,
+                            cancelled,
                             gcs_audit_logger,
                             verbose,
                             turn_logger,
@@ -680,7 +615,6 @@ async def run_repl(
                 cancelled = True
                 task.cancel()
 
-            # ── Outer handler: single authoritative site for all exceptions.
             loop.add_signal_handler(signal.SIGINT, _cancel, None)
             try:
                 await task
@@ -688,23 +622,15 @@ async def run_repl(
                 cancelled = True
                 logger.info("Turn cancelled by user (Ctrl+C)")
             except Exception as e:
-                if _is_stream_connection_error(e):
-                    transport_failed = True
-                    logger.warning(
-                        "Recoverable stream transport error; returning to REPL: %s",
-                        e,
-                        exc_info=True,
-                    )
-                    _print_stream_connection_error(e)
-                else:
-                    raise
+                logger.warning("Turn failed; returning to REPL: %s", e, exc_info=True)
+                print(
+                    f"\n\033[43;30m⚠️  Turn failed: {type(e).__name__}: {e}\033[0m"
+                )
             finally:
                 loop.remove_signal_handler(signal.SIGINT)
 
             if cancelled:
                 print("\n\033[41m⚠️  Cancelled.\033[0m")
-            elif transport_failed:
-                print("\n\033[43;30m⚠️  Turn ended early because the stream connection dropped.\033[0m")
 
             if gcs_audit_logger:
                 gcs_uri = await gcs_audit_logger.flush_turn()
