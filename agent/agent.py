@@ -13,6 +13,9 @@ Architecture (normal mode):
     MCPServerSSE ─ HTTP/SSE ───▶ uvicorn 0.0.0.0:9100
     127.0.0.1:9100/sse              tools: execute_command, read_file ...
 
+  upload_output_file runs on the HOST (reads from shared /workspace mount,
+  uploads to GCS via host credentials).
+
 Root mode (--root):
   Tools run DIRECTLY on the host via local_tools.py — no sandboxing!
   Use with caution.
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import readline  # noqa: F401 — enables arrow keys & history in input()
 from pathlib import Path
 
@@ -38,7 +42,7 @@ from pydantic_ai.models.anthropic import AnthropicModelSettings
 
 from model import build_model, build_openai_model
 from mcp_helpers import DEFAULT_MCP_URL, build_tcp_mcp_server
-from local_tools import register_local_tools
+from local_tools import register_local_tools, register_upload_tool
 from logging_config import setup_logging, get_logger
 from repl import run_repl, strip_thinking_blocks
 
@@ -51,11 +55,21 @@ logger = get_logger(__name__)
 
 _SYSTEM_PROMPT_PATH = Path.home() / ".config" / "atom-agentic-ai" / "system_prompt.md"
 
+_UPLOAD_INSTRUCTION = (
+    "\n\nIMPORTANT: When you create or generate any output files (reports, CSVs, "
+    "analyses, charts, processed data, or any other deliverables), call the "
+    "upload_output_file tool to upload each file to cloud storage so the "
+    "user can access it. Do this as a final step after the file is written."
+)
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful agent. Your tools (execute_command, read_file, "
-    "write_file, append_file, delete_file, list_dir) run inside a hardened "
-    "Docker sandbox with no network access. File paths are relative to "
-    "/workspace inside the sandbox."
+    "write_file, append_file, delete_file, list_dir, upload_output_file) "
+    "run inside a hardened Docker sandbox with no network access. File "
+    "paths are relative to /workspace inside the sandbox. The "
+    "upload_output_file tool runs on the host and uploads files from "
+    "/workspace to cloud storage."
+    + _UPLOAD_INSTRUCTION
 )
 
 _ROOT_MODE_SYSTEM_PROMPT = (
@@ -63,12 +77,14 @@ _ROOT_MODE_SYSTEM_PROMPT = (
     "write_file, append_file, delete_file, list_dir, upload_output_file) "
     "run DIRECTLY on the host machine with NO sandboxing. File paths are "
     "relative to the current working directory. Be careful with destructive "
-    "operations!\n\n"
-    "IMPORTANT: When you create or generate any output files (reports, CSVs, "
-    "analyses, charts, processed data, or any other deliverables), call the "
-    "upload_output_file tool to upload each file to cloud storage so the "
-    "user can access it. Do this as a final step after the file is written."
+    "operations!"
+    + _UPLOAD_INSTRUCTION
 )
+
+# Shared workspace: same path on host and container (default /workspace).
+_SHARED_WORKSPACE = Path(
+    os.environ.get("ATOM_SHARED_WORKSPACE", "/workspace")
+).resolve()
 
 
 def get_system_prompt(root_mode: bool = False, prompt_file: Path | None = None) -> str:
@@ -132,31 +148,38 @@ def build_agent(
                 history_processors=[strip_thinking_blocks],
             )
         register_local_tools(agent)
+        register_upload_tool(agent)
         return agent
 
-    # --- Normal mode: MCP sandbox tools ---
+    # --- Normal mode: MCP sandbox tools + host-side upload tool ---
     mcp_server = build_tcp_mcp_server(mcp_url)
     if use_openai:
-        return Agent(
+        agent = Agent(
             model=build_openai_model(),
             model_settings={"max_tokens": 127_000},
             system_prompt=prompt,
             mcp_servers=[mcp_server],
         )
-    return Agent(
-        model=build_model(),
-        model_settings=AnthropicModelSettings(
-            max_tokens=127_000,
-            anthropic_thinking={"type": "adaptive"},
-            anthropic_betas=["fine-grained-tool-streaming-2025-05-14"],
-            anthropic_cache_instructions=True,
-            anthropic_cache_tool_definitions=True,
-            anthropic_cache_messages=True,
-        ),
-        system_prompt=prompt,
-        mcp_servers=[mcp_server],
-        history_processors=[strip_thinking_blocks],
-    )
+    else:
+        agent = Agent(
+            model=build_model(),
+            model_settings=AnthropicModelSettings(
+                max_tokens=127_000,
+                anthropic_thinking={"type": "adaptive"},
+                anthropic_betas=["fine-grained-tool-streaming-2025-05-14"],
+                anthropic_cache_instructions=True,
+                anthropic_cache_tool_definitions=True,
+                anthropic_cache_messages=True,
+            ),
+            system_prompt=prompt,
+            mcp_servers=[mcp_server],
+            history_processors=[strip_thinking_blocks],
+        )
+
+    # upload_output_file runs on the HOST — reads from the shared workspace
+    # mount and uploads to GCS using host credentials.
+    register_upload_tool(agent, workspace=_SHARED_WORKSPACE)
+    return agent
 
 
 # ---------------------------------------------------------------------------

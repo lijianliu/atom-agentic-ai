@@ -11,6 +11,8 @@ Tools provided (match MCP sandbox API):
   - append_file
   - delete_file
   - list_dir
+
+Host-side tool (available in both root mode and sandbox mode):
   - upload_output_file
 """
 from __future__ import annotations
@@ -41,21 +43,21 @@ COMMAND_TIMEOUT = int(os.environ.get("LOCAL_CMD_TIMEOUT", "120"))
 # Path safety
 # ---------------------------------------------------------------------------
 
-def _safe_path(path: str) -> Path:
-    """Resolve *path* and raise ValueError if it escapes SAFE_ROOT."""
+def _safe_path(path: str, root: Path = SAFE_ROOT) -> Path:
+    """Resolve *path* and raise ValueError if it escapes *root*."""
     candidate = Path(path)
     if not candidate.is_absolute():
-        candidate = SAFE_ROOT / candidate
+        candidate = root / candidate
     resolved = candidate.resolve()
-    if resolved != SAFE_ROOT and not str(resolved).startswith(str(SAFE_ROOT) + os.sep):
+    if resolved != root and not str(resolved).startswith(str(root) + os.sep):
         raise ValueError(
-            f"Access denied — path must be within {SAFE_ROOT}. Got: {resolved}"
+            f"Access denied — path must be within {root}. Got: {resolved}"
         )
     return resolved
 
 
 # ---------------------------------------------------------------------------
-# Tool registration helper
+# Tool registration helpers
 # ---------------------------------------------------------------------------
 
 def register_local_tools(agent: Agent) -> None:
@@ -182,6 +184,23 @@ def register_local_tools(agent: Agent) -> None:
         except Exception as exc:  # noqa: BLE001
             return f"Error listing directory: {exc}"
 
+
+def register_upload_tool(agent: Agent, workspace: Path | None = None) -> None:
+    """Register the upload_output_file tool on the given agent.
+
+    This tool runs on the HOST (not inside the sandbox) and uploads files
+    to GCS using the active GCSLogger session.
+
+    Parameters
+    ----------
+    agent:
+        The pydantic-ai Agent to register the tool on.
+    workspace:
+        Root directory for resolving file paths.  Defaults to SAFE_ROOT
+        (CWD in root mode, /workspace in sandbox mode).
+    """
+    upload_root = (workspace or SAFE_ROOT).resolve()
+
     @agent.tool_plain
     def upload_output_file(path: str, destination_filename: str | None = None) -> str:
         """Upload a file you created to cloud storage for delivery.
@@ -205,7 +224,7 @@ def register_local_tools(agent: Agent) -> None:
             or an error message.
         """
         try:
-            resolved = _safe_path(path)
+            resolved = _safe_path(path, root=upload_root)
         except ValueError as exc:
             logger.warning("upload_output_file: path rejected: %s", exc)
             return f"Error: {exc}"
