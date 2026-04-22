@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import getpass
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -37,6 +38,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from logging_config import get_logger
@@ -64,14 +66,8 @@ FETCH_TOKEN_TIMEOUT = 60      # seconds to wait for gcloud auth command
 FETCH_TOKEN_MAX_RETRIES = 3   # number of attempts before giving up
 FETCH_TOKEN_RETRY_BACKOFF = 2 # base seconds for exponential backoff
 
-# Content-type mapping for uploaded turn-log files
-_CONTENT_TYPE_MAP = {
-    ".html": "text/html",
-    ".htm": "text/html",
-    ".json": "application/json",
-    ".jsonl": "application/jsonl",
-}
-_DEFAULT_CONTENT_TYPE = "text/plain"
+# Register .jsonl — not in Python's default mimetypes database.
+mimetypes.add_type("application/jsonl", ".jsonl")
 
 
 # ---------------------------------------------------------------------------
@@ -135,12 +131,46 @@ def _slugify_prompt(text: str, max_len: int = PROMPT_SLUG_MAX) -> str:
 
 
 def _content_type_for_path(filepath: Any) -> str:
-    """Return the Content-Type for a file based on its suffix."""
-    try:
-        suffix = filepath.suffix.lower()
-    except AttributeError:
-        suffix = ""
-    return _CONTENT_TYPE_MAP.get(suffix, _DEFAULT_CONTENT_TYPE)
+    """Return the Content-Type for a file based on its name/extension.
+
+    Uses Python's built-in ``mimetypes.guess_type()``.
+    Falls back to ``application/octet-stream`` for unknown extensions.
+    """
+    name = str(filepath)
+    mime, _ = mimetypes.guess_type(name)
+    return mime or "application/octet-stream"
+
+
+def gcs_uri_to_web_url(gcs_uri: str) -> str | None:
+    """Convert a ``gs://`` URI to a web URL using environment variables.
+
+    Uses two environment variables:
+        ATOM_LOG_URL_PREFIX     — The web URL prefix, e.g.
+                                  ``atom.company.com/ext/atom-agentic-ui``
+        ATOM_LOG_URL_GCS_PREFIX — The GCS path prefix to strip, e.g.
+                                  ``gs://my-bucket/my-folder``
+
+    Example:
+        gcs_uri  = "gs://my-bucket/my-folder/2026-04-18/jdoe/17-32-28.060Z/session.html"
+        gcs_pfx  = "gs://my-bucket/my-folder"
+        web_pfx  = "atom.company.com/ext/atom-agentic-ui"
+        result   = "atom.company.com/ext/atom-agentic-ui/2026-04-18/jdoe/17-32-28.060Z/session.html"
+
+    Returns ``None`` if either env var is unset or the GCS URI doesn't
+    start with the expected GCS prefix.
+    """
+    web_prefix = os.environ.get("ATOM_LOG_URL_PREFIX", "").strip().rstrip("/")
+    gcs_prefix = os.environ.get("ATOM_LOG_URL_GCS_PREFIX", "").strip().rstrip("/")
+    if not web_prefix or not gcs_prefix:
+        return None
+    if not gcs_uri.startswith(gcs_prefix):
+        logger.debug(
+            "GCS URI %r does not start with ATOM_LOG_URL_GCS_PREFIX %r",
+            gcs_uri, gcs_prefix,
+        )
+        return None
+    relative = gcs_uri[len(gcs_prefix):].lstrip("/")
+    return f"{web_prefix}/{relative}"
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +217,10 @@ class NullGCSLogger:
     """No-op logger used when GCS is not configured."""
 
     def upload_turn_log(self, filepath, content):
+        """No-op upload — always returns ``None``."""
+        return None
+
+    def upload_output_file(self, local_path, destination_filename=None):
         """No-op upload — always returns ``None``."""
         return None
 
@@ -409,6 +443,18 @@ class GCSLogger:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _session_folder(self) -> str:
+        """Return the session folder prefix (without trailing slash).
+
+        Format: ``{prefix}/{date}/{username}/{time}``
+        Example: ``logs/2026-03-29/jdoe/19-14-11.422Z``
+        """
+        date_part, time_part = self._session_ts.split("T", 1)
+        parts = [date_part, self.username, time_part]
+        if self.prefix:
+            parts.insert(0, self.prefix)
+        return "/".join(parts)
+
     def _blob_path_for_turn(self, turn: int, slug: str) -> str:
         """Build the blob path for a specific turn.
 
@@ -418,24 +464,67 @@ class GCSLogger:
         Example:
             logs/2026-03-29/jdoe/19-14-11.422Z/jdoe-2026-03-29T19-14-11.422Z-001-what_is_the_meaning_of_life.jsonl
         """
-        # session_ts = "2026-03-29T19-14-11.422Z"
-        date_part, time_part = self._session_ts.split("T", 1)
-        date_folder = date_part                             # 2026-03-29
-
         filename = (
             f"{self.username}-{self._session_ts}-{turn:03d}-{slug}.jsonl"
         )
-        parts = [date_folder, self.username, time_part, filename]
-        if self.prefix:
-            parts.insert(0, self.prefix)
-        return "/".join(parts)
+        return f"{self._session_folder()}/{filename}"
+
+    def upload_output_file(
+        self,
+        local_path: Path,
+        destination_filename: str | None = None,
+    ) -> str:
+        """Upload a local file to the session folder in GCS.
+
+        The file lands alongside turn logs and the session HTML::
+
+            {prefix}/{date}/{username}/{time}/{filename}
+
+        Parameters
+        ----------
+        local_path:
+            Resolved local file path to upload.
+        destination_filename:
+            Override the filename in GCS.  Defaults to the local filename.
+
+        Returns
+        -------
+        str
+            The ``gs://`` URI of the uploaded file.
+
+        Raises
+        ------
+        RuntimeError
+            If ``google-cloud-storage`` is not installed or the upload fails.
+        """
+        if not _GCS_AVAILABLE:
+            raise RuntimeError(
+                "google-cloud-storage is not installed. "
+                "Fix with:  uv add google-cloud-storage"
+            )
+
+        filename = destination_filename or local_path.name
+        blob_path = f"{self._session_folder()}/{filename}"
+        content_type = _content_type_for_path(local_path)
+
+        client = _gcs_client_factory.get_client()
+        bucket = client.bucket(self.bucket_name)
+        blob = bucket.blob(blob_path)
+        blob.upload_from_filename(str(local_path), content_type=content_type)
+
+        gcs_uri = f"gs://{self.bucket_name}/{blob_path}"
+        logger.info(
+            "Output file uploaded: %s → %s (%s, %d bytes)",
+            local_path.name, gcs_uri, content_type, local_path.stat().st_size,
+        )
+        return gcs_uri
 
     def upload_turn_log(self, filepath: "Path", content: str) -> str | None:
         """Upload a turn log file to GCS (fire-and-forget).
 
         Mirrors the local turn-log directory structure into the same
         GCS prefix used by this logger.  Content-Type is auto-detected
-        from the file extension (``.html`` → ``text/html``, etc.).
+        from the file extension.
 
         Returns the ``gs://`` URI on success, or ``None`` on skip/failure.
         """
@@ -467,6 +556,27 @@ class GCSLogger:
         blob = bucket.blob(blob_path)
         content = "\n".join(lines) + "\n"
         blob.upload_from_string(content, content_type="application/jsonl")
+
+
+# ---------------------------------------------------------------------------
+# Module-level active logger (set by repl.py after GCSLogger.from_env())
+# ---------------------------------------------------------------------------
+# Tools registered at agent-build time need access to the session's GCSLogger
+# instance, which is only created later in repl.py.  This module-level
+# reference bridges that gap.  repl.py sets it; local_tools.py reads it.
+
+_active_gcs_logger: GCSLogger | None = None
+
+
+def set_active_gcs_logger(gcs_logger: GCSLogger | None) -> None:
+    """Set the module-level active GCS logger (called by repl.py)."""
+    global _active_gcs_logger
+    _active_gcs_logger = gcs_logger
+
+
+def get_active_gcs_logger() -> GCSLogger | None:
+    """Get the module-level active GCS logger (called by local_tools.py)."""
+    return _active_gcs_logger
 
 
 # ---------------------------------------------------------------------------

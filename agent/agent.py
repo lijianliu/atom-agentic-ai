@@ -60,9 +60,14 @@ _DEFAULT_SYSTEM_PROMPT = (
 
 _ROOT_MODE_SYSTEM_PROMPT = (
     "You are a helpful agent. Your tools (execute_command, read_file, "
-    "write_file, append_file, delete_file, list_dir) run DIRECTLY on the "
-    "host machine with NO sandboxing. File paths are relative to the "
-    "current working directory. Be careful with destructive operations!"
+    "write_file, append_file, delete_file, list_dir, upload_output_file) "
+    "run DIRECTLY on the host machine with NO sandboxing. File paths are "
+    "relative to the current working directory. Be careful with destructive "
+    "operations!\n\n"
+    "IMPORTANT: When you create or generate any output files (reports, CSVs, "
+    "analyses, charts, processed data, or any other deliverables), call the "
+    "upload_output_file tool to upload each file to cloud storage so the "
+    "user can access it. Do this as a final step after the file is written."
 )
 
 

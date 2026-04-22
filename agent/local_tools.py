@@ -11,6 +11,7 @@ Tools provided (match MCP sandbox API):
   - append_file
   - delete_file
   - list_dir
+  - upload_output_file
 """
 from __future__ import annotations
 
@@ -21,8 +22,12 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 
+from logging_config import get_logger
+
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -176,3 +181,74 @@ def register_local_tools(agent: Agent) -> None:
             return f"Contents of {resolved} ({len(entries)} entries):\n" + "\n".join(entries)
         except Exception as exc:  # noqa: BLE001
             return f"Error listing directory: {exc}"
+
+    @agent.tool_plain
+    def upload_output_file(path: str, destination_filename: str | None = None) -> str:
+        """Upload a file you created to cloud storage for delivery.
+
+        WHEN TO USE: Call this tool after you have finished creating or
+        generating an output file (e.g., a report, CSV, analysis, chart,
+        processed data, or any other deliverable) and you want to make it
+        available to the user via cloud storage.
+
+        The file is uploaded to the current session folder in Google Cloud
+        Storage (configured by ATOM_AUDIT_LOG_GCS_PATH).
+
+        Args:
+            path:                 Path to the local file to upload (relative
+                                  to the working directory or absolute).
+            destination_filename: Optional override for the filename in cloud
+                                  storage.  Defaults to the original filename.
+
+        Returns:
+            The full GCS path (gs:// URI) and web URL of the uploaded file,
+            or an error message.
+        """
+        try:
+            resolved = _safe_path(path)
+        except ValueError as exc:
+            logger.warning("upload_output_file: path rejected: %s", exc)
+            return f"Error: {exc}"
+        if not resolved.exists():
+            logger.warning("upload_output_file: file not found: %s", resolved)
+            return f"Error: file not found: {resolved}"
+        if not resolved.is_file():
+            logger.warning("upload_output_file: not a file: %s", resolved)
+            return f"Error: not a file: {resolved}"
+
+        size = resolved.stat().st_size
+        logger.info(
+            "upload_output_file: starting upload of %s (%d bytes, dest=%s)",
+            resolved, size, destination_filename or resolved.name,
+        )
+
+        try:
+            from gcs_audit_logger import get_active_gcs_logger, gcs_uri_to_web_url
+
+            gcs_logger = get_active_gcs_logger()
+            if gcs_logger is None:
+                logger.error("upload_output_file: no active GCS logger (ATOM_AUDIT_LOG_GCS_PATH not set?)")
+                return (
+                    "Error (configuration): GCS logging is not configured. "
+                    "Set ATOM_AUDIT_LOG_GCS_PATH to enable output file uploads."
+                )
+
+            gcs_uri = gcs_logger.upload_output_file(
+                local_path=resolved,
+                destination_filename=destination_filename,
+            )
+            web_url = gcs_uri_to_web_url(gcs_uri)
+            logger.info(
+                "upload_output_file: success — %s (%d bytes) → %s (web: %s)",
+                resolved.name, size, gcs_uri, web_url or "N/A",
+            )
+            result = gcs_uri
+            if web_url:
+                result += f"\n{web_url}"
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "upload_output_file: upload failed for %s: %s",
+                resolved.name, exc, exc_info=True,
+            )
+            return f"Error uploading file: {exc}"

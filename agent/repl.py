@@ -42,7 +42,7 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import ANSI
 
-from gcs_audit_logger import GCSLogger
+from gcs_audit_logger import GCSLogger, gcs_uri_to_web_url, set_active_gcs_logger
 from logging_config import get_logger, LOG_FILE_PATH
 from session_store import save_session, load_session, default_session_path
 from turn_logger import TurnLogger
@@ -237,42 +237,6 @@ def _sanitize_history(history: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _gcs_uri_to_web_url(gcs_uri: str) -> str | None:
-    """Convert a ``gs://`` URI to a web URL using environment variables.
-
-    Uses two environment variables:
-        ATOM_LOG_URL_PREFIX     — The web URL prefix, e.g.
-                                  ``atom.company.com/ext/atom-agentic-ui``
-        ATOM_LOG_URL_GCS_PREFIX — The GCS path prefix to strip, e.g.
-                                  ``gs://my-bucket/my-folder``
-
-    Example:
-        gcs_uri  = "gs://my-bucket/my-folder/2026-04-18/jdoe/17-32-28.060Z/session.html"
-        gcs_pfx  = "gs://my-bucket/my-folder"
-        web_pfx  = "atom.company.com/ext/atom-agentic-ui"
-        result   = "atom.company.com/ext/atom-agentic-ui/2026-04-18/jdoe/17-32-28.060Z/session.html"
-
-    Returns ``None`` if either env var is unset or the GCS URI doesn't
-    start with the expected GCS prefix.
-    """
-    web_prefix = os.environ.get("ATOM_LOG_URL_PREFIX", "").strip().rstrip("/")
-    gcs_prefix = os.environ.get("ATOM_LOG_URL_GCS_PREFIX", "").strip().rstrip("/")
-    if not web_prefix or not gcs_prefix:
-        return None
-    if not gcs_uri.startswith(gcs_prefix):
-        logger.debug(
-            "GCS URI %r does not start with ATOM_LOG_URL_GCS_PREFIX %r",
-            gcs_uri, gcs_prefix,
-        )
-        return None
-    relative = gcs_uri[len(gcs_prefix):].lstrip("/")
-    return f"{web_prefix}/{relative}"
-
-
-# ---------------------------------------------------------------------------
 # Main REPL loop
 # ---------------------------------------------------------------------------
 
@@ -301,6 +265,7 @@ async def run_repl(
     print(f"   \U0001f4cb Log: {LOG_FILE_PATH}")
 
     gcs_audit_logger = GCSLogger.from_env()
+    set_active_gcs_logger(gcs_audit_logger)
     if gcs_audit_logger:
         logger.info("GCS logging enabled → %s", gcs_audit_logger.gcs_uri)
         print(f"   \U0001f194 Session ID: {gcs_audit_logger.session_id}")
@@ -650,7 +615,7 @@ async def run_repl(
         print(f"   📄 Local: {html_path}")
     if html_gcs_uri:
         print(f"   ☁️  GCS:   {html_gcs_uri}")
-        web_url = _gcs_uri_to_web_url(html_gcs_uri)
+        web_url = gcs_uri_to_web_url(html_gcs_uri)
         if web_url:
             print(f"   🌐 Web:   {web_url}")
     elif html_path:
