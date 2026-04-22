@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import anthropic
 import httpcore
 import httpx
 
@@ -242,25 +243,38 @@ def _sanitize_history(history: list) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+_RECOVERABLE_TRANSPORT_ERRORS = (
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.WriteError,
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    httpcore.RemoteProtocolError,
+    httpcore.ReadError,
+    httpcore.WriteError,
+    httpcore.ConnectError,
+    httpcore.ReadTimeout,
+    httpcore.WriteTimeout,
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+)
+
+
 def _is_stream_connection_error(exc: BaseException) -> bool:
-    """Return True for recoverable streaming transport failures."""
-    return isinstance(
-        exc,
-        (
-            httpx.RemoteProtocolError,
-            httpx.ReadError,
-            httpx.ReadTimeout,
-            httpx.WriteError,
-            httpx.ConnectError,
-            httpx.TimeoutException,
-            httpcore.RemoteProtocolError,
-            httpcore.ReadError,
-            httpcore.WriteError,
-            httpcore.ConnectError,
-            httpcore.ReadTimeout,
-            httpcore.WriteTimeout,
-        ),
-    )
+    """Return True for recoverable streaming transport failures.
+
+    Walks the ``__cause__`` chain so that wrapper exceptions (e.g.
+    ``pydantic_ai.exceptions.ModelAPIError`` wrapping
+    ``anthropic.APITimeoutError`` wrapping ``httpx.ReadTimeout``)
+    are still recognised as recoverable.
+    """
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, _RECOVERABLE_TRANSPORT_ERRORS):
+            return True
+        current = getattr(current, "__cause__", None)
+    return False
 
 
 def _print_stream_connection_error(exc: BaseException) -> None:
@@ -437,241 +451,227 @@ async def run_repl(
             transport_failed = False
             loop = asyncio.get_running_loop()
 
+            # ── Agent turn ──────────────────────────────────────
+            # Exception handling is structured in two layers:
+            #
+            #   INNER (inside _run / async with agent.iter):
+            #     Sets flags (cancelled / transport_failed) so that
+            #     _finalize_turn() knows the outcome, then RE-RAISES.
+            #     No logging, no user messages — just flag + propagate.
+            #
+            #   OUTER (task boundary / await task):
+            #     Single authoritative handler for all exceptions.
+            #     Does logging, user messages, and decides whether to
+            #     swallow (recoverable) or re-raise (bug).
+            # ────────────────────────────────────────────────────
+
             async def _run() -> None:
                 nonlocal cancelled, transport_failed
 
                 # REPL-boundary sanitization only
                 _sanitize_history(message_history)
 
-                try:
-                    async with agent.iter(
-                        prompt,
-                        message_history=message_history,
-                        usage_limits=UsageLimits(request_limit=500),
-                    ) as run:
-                        try:
-                            pending_tool_calls: list[tuple[str, Any, str]] = []
+                async with agent.iter(
+                    prompt,
+                    message_history=message_history,
+                    usage_limits=UsageLimits(request_limit=500),
+                ) as run:
+                    try:
+                        pending_tool_calls: list[tuple[str, Any, str]] = []
 
-                            async for node in run:
-                                if Agent.is_model_request_node(node):
-                                    turn_logger.start_turn()
+                        async for node in run:
+                            if Agent.is_model_request_node(node):
+                                turn_logger.start_turn()
 
-                                    if pending_tool_calls:
-                                        for part in node.request.parts:
-                                            if isinstance(part, ToolReturnPart):
-                                                for tool_name, args, call_id in list(pending_tool_calls):
-                                                    if call_id == part.tool_call_id:
-                                                        turn_logger.log_tool_exec(
-                                                            tool_name,
-                                                            args,
-                                                            call_id,
-                                                            result=part.content,
-                                                            override_query=turn_logger.current_query,
-                                                            override_turn=turn_logger.previous_turn,
-                                                        )
-                                                        args_str = str(args)[:1000] if args else ""
-                                                        print(f"\033[97;48;5;166m⚙️ [Tool Exec - End]\033[0m {tool_name}({args_str})")
-                                                        if gcs_audit_logger:
-                                                            await gcs_audit_logger.log("tool_call", {
-                                                                "tool": tool_name,
-                                                                "args_preview": args_str,
-                                                            })
-                                                        pending_tool_calls.remove((tool_name, args, call_id))
-                                                        break
+                                if pending_tool_calls:
+                                    for part in node.request.parts:
+                                        if isinstance(part, ToolReturnPart):
+                                            for tool_name, args, call_id in list(pending_tool_calls):
+                                                if call_id == part.tool_call_id:
+                                                    turn_logger.log_tool_exec(
+                                                        tool_name,
+                                                        args,
+                                                        call_id,
+                                                        result=part.content,
+                                                        override_query=turn_logger.current_query,
+                                                        override_turn=turn_logger.previous_turn,
+                                                    )
+                                                    args_str = str(args)[:1000] if args else ""
+                                                    print(f"\033[97;48;5;166m⚙️ [Tool Exec - End]\033[0m {tool_name}({args_str})")
+                                                    if gcs_audit_logger:
+                                                        await gcs_audit_logger.log("tool_call", {
+                                                            "tool": tool_name,
+                                                            "args_preview": args_str,
+                                                        })
+                                                    pending_tool_calls.remove((tool_name, args, call_id))
+                                                    break
 
-                                    tool_args_printed = 0
-                                    TOOL_ARGS_CAP = 200
-                                    stream_thinking: list[str] = []
-                                    stream_text: list[str] = []
-                                    stream_tool_calls: dict[int, dict] = {}
-                                    tool_call_open = False
+                                tool_args_printed = 0
+                                TOOL_ARGS_CAP = 200
+                                stream_thinking: list[str] = []
+                                stream_text: list[str] = []
+                                stream_tool_calls: dict[int, dict] = {}
+                                tool_call_open = False
 
-                                    async with node.stream(run.ctx) as stream:
-                                        async for event in stream:
-                                            if isinstance(event, PartStartEvent):
-                                                if tool_call_open:
-                                                    print(")", flush=True)
-                                                    tool_call_open = False
-                                                if tool_args_printed >= TOOL_ARGS_CAP:
-                                                    kb = tool_args_printed / 1024
-                                                    print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
+                                async with node.stream(run.ctx) as stream:
+                                    async for event in stream:
+                                        if isinstance(event, PartStartEvent):
+                                            if tool_call_open:
+                                                print(")", flush=True)
+                                                tool_call_open = False
+                                            if tool_args_printed >= TOOL_ARGS_CAP:
+                                                kb = tool_args_printed / 1024
+                                                print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
 
-                                                current_part_index = event.index
-                                                tool_args_printed = 0
-
-                                                if isinstance(event.part, ThinkingPart):
-                                                    print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
-                                                    content = event.part.content
-                                                    if isinstance(content, str) and content:
-                                                        print(content, end="", flush=True)
-                                                        stream_thinking.append(content)
-                                                elif isinstance(event.part, TextPart):
-                                                    print("\n\033[48;5;22m💬 [Text]\033[0m ", end="", flush=True)
-                                                    content = event.part.content
-                                                    if isinstance(content, str) and content:
-                                                        print(content, end="", flush=True)
-                                                        stream_text.append(content)
-                                                elif isinstance(event.part, ToolCallPart):
-                                                    args_str = str(event.part.args) if event.part.args else ""
-                                                    print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}(", end="", flush=True)
-                                                    if args_str:
-                                                        if len(args_str) > TOOL_ARGS_CAP:
-                                                            print(f"{args_str[:TOOL_ARGS_CAP]}…)", flush=True)
-                                                            tool_args_printed = TOOL_ARGS_CAP
-                                                            tool_call_open = False
-                                                        else:
-                                                            print(args_str, end="", flush=True)
-                                                            tool_args_printed = len(args_str)
-                                                            tool_call_open = True
-                                                    else:
-                                                        tool_call_open = True
-                                                    stream_tool_calls[current_part_index] = {
-                                                        "tool": event.part.tool_name,
-                                                        "args": args_str,
-                                                        "call_id": getattr(event.part, "tool_call_id", None),
-                                                    }
-
-                                            elif isinstance(event, PartDeltaEvent):
-                                                if isinstance(event.delta, TextPartDelta):
-                                                    delta_text = event.delta.content_delta
-                                                    if isinstance(delta_text, str) and delta_text:
-                                                        print(delta_text, end="", flush=True)
-                                                        stream_text.append(delta_text)
-                                                elif isinstance(event.delta, ThinkingPartDelta):
-                                                    delta_text = event.delta.content_delta
-                                                    if isinstance(delta_text, str) and delta_text:
-                                                        print(delta_text, end="", flush=True)
-                                                        stream_thinking.append(delta_text)
-                                                elif isinstance(event.delta, ToolCallPartDelta):
-                                                    chunk = event.delta.args_delta
-                                                    if not isinstance(chunk, str):
-                                                        chunk = ""
-                                                    if tool_args_printed < TOOL_ARGS_CAP and chunk:
-                                                        remaining = TOOL_ARGS_CAP - tool_args_printed
-                                                        if len(chunk) > remaining:
-                                                            print(chunk[:remaining] + "…)", flush=True)
-                                                            tool_call_open = False
-                                                        else:
-                                                            print(chunk, end="", flush=True)
-                                                    tool_args_printed += len(chunk) if chunk else 0
-                                                    if tool_args_printed >= TOOL_ARGS_CAP and chunk:
-                                                        kb = tool_args_printed / 1024
-                                                        print(f"\r\033[K  \u23f3 streaming\u2026 {kb:.1f}KB", end="", flush=True)
-                                                    if chunk and event.index in stream_tool_calls:
-                                                        stream_tool_calls[event.index]["args"] += chunk
-
-                                        if tool_call_open:
-                                            print(")", flush=True)
-                                            tool_call_open = False
-                                        if tool_args_printed >= TOOL_ARGS_CAP:
-                                            kb = tool_args_printed / 1024
-                                            print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
+                                            current_part_index = event.index
                                             tool_args_printed = 0
 
-                                        if stream_thinking:
-                                            turn_logger.log_thinking("".join(s for s in stream_thinking if isinstance(s, str)))
-                                        if stream_text:
-                                            turn_logger.log_text("".join(s for s in stream_text if isinstance(s, str)))
-                                        for tc in stream_tool_calls.values():
-                                            turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
+                                            if isinstance(event.part, ThinkingPart):
+                                                print("\n\033[48;5;17m💭 [Thinking]\033[0m ", end="", flush=True)
+                                                content = event.part.content
+                                                if isinstance(content, str) and content:
+                                                    print(content, end="", flush=True)
+                                                    stream_thinking.append(content)
+                                            elif isinstance(event.part, TextPart):
+                                                print("\n\033[48;5;22m💬 [Text]\033[0m ", end="", flush=True)
+                                                content = event.part.content
+                                                if isinstance(content, str) and content:
+                                                    print(content, end="", flush=True)
+                                                    stream_text.append(content)
+                                            elif isinstance(event.part, ToolCallPart):
+                                                args_str = str(event.part.args) if event.part.args else ""
+                                                print(f"\n\033[97;48;5;166m🔧 [Tool Plan]\033[0m {event.part.tool_name}(", end="", flush=True)
+                                                if args_str:
+                                                    if len(args_str) > TOOL_ARGS_CAP:
+                                                        print(f"{args_str[:TOOL_ARGS_CAP]}…)", flush=True)
+                                                        tool_args_printed = TOOL_ARGS_CAP
+                                                        tool_call_open = False
+                                                    else:
+                                                        print(args_str, end="", flush=True)
+                                                        tool_args_printed = len(args_str)
+                                                        tool_call_open = True
+                                                else:
+                                                    tool_call_open = True
+                                                stream_tool_calls[current_part_index] = {
+                                                    "tool": event.part.tool_name,
+                                                    "args": args_str,
+                                                    "call_id": getattr(event.part, "tool_call_id", None),
+                                                }
 
-                                        turn_usage = stream.usage()
+                                        elif isinstance(event, PartDeltaEvent):
+                                            if isinstance(event.delta, TextPartDelta):
+                                                delta_text = event.delta.content_delta
+                                                if isinstance(delta_text, str) and delta_text:
+                                                    print(delta_text, end="", flush=True)
+                                                    stream_text.append(delta_text)
+                                            elif isinstance(event.delta, ThinkingPartDelta):
+                                                delta_text = event.delta.content_delta
+                                                if isinstance(delta_text, str) and delta_text:
+                                                    print(delta_text, end="", flush=True)
+                                                    stream_thinking.append(delta_text)
+                                            elif isinstance(event.delta, ToolCallPartDelta):
+                                                chunk = event.delta.args_delta
+                                                if not isinstance(chunk, str):
+                                                    chunk = ""
+                                                if tool_args_printed < TOOL_ARGS_CAP and chunk:
+                                                    remaining = TOOL_ARGS_CAP - tool_args_printed
+                                                    if len(chunk) > remaining:
+                                                        print(chunk[:remaining] + "…)", flush=True)
+                                                        tool_call_open = False
+                                                    else:
+                                                        print(chunk, end="", flush=True)
+                                                tool_args_printed += len(chunk) if chunk else 0
+                                                if tool_args_printed >= TOOL_ARGS_CAP and chunk:
+                                                    kb = tool_args_printed / 1024
+                                                    print(f"\r\033[K  \u23f3 streaming\u2026 {kb:.1f}KB", end="", flush=True)
+                                                if chunk and event.index in stream_tool_calls:
+                                                    stream_tool_calls[event.index]["args"] += chunk
+
+                                    if tool_call_open:
+                                        print(")", flush=True)
+                                        tool_call_open = False
+                                    if tool_args_printed >= TOOL_ARGS_CAP:
+                                        kb = tool_args_printed / 1024
+                                        print(f"\r\033[K  \u2705 streamed {kb:.1f}KB", flush=True)
+                                        tool_args_printed = 0
+
+                                    if stream_thinking:
+                                        turn_logger.log_thinking("".join(s for s in stream_thinking if isinstance(s, str)))
+                                    if stream_text:
+                                        turn_logger.log_text("".join(s for s in stream_text if isinstance(s, str)))
+                                    for tc in stream_tool_calls.values():
+                                        turn_logger.log_tool_plan(tc["tool"], tc["args"], tc.get("call_id"))
+
+                                    turn_usage = stream.usage()
+                                    print(
+                                        f"\n\033[48;5;240m📊 [Usage \033[0m"
+                                        f"{format_usage_line(turn_usage, query=turn_logger.current_query, turn=turn_logger.current_turn)}"
+                                    )
+                                    turn_logger.log_usage(build_usage_dict(turn_usage))
+
+                            elif Agent.is_call_tools_node(node):
+                                for part in node.model_response.parts:
+                                    if isinstance(part, ToolCallPart):
+                                        pending_tool_calls.append((
+                                            part.tool_name,
+                                            part.args,
+                                            part.tool_call_id,
+                                        ))
+                                        args_str = str(part.args)[:1000] if part.args else ""
                                         print(
-                                            f"\n\033[48;5;240m📊 [Usage \033[0m"
-                                            f"{format_usage_line(turn_usage, query=turn_logger.current_query, turn=turn_logger.current_turn)}"
+                                            f"\033[97;48;5;172m⚙️ [Tool Exec - Start]\033[0m {part.tool_name}({args_str})",
+                                            flush=True,
                                         )
-                                        turn_logger.log_usage(build_usage_dict(turn_usage))
 
-                                elif Agent.is_call_tools_node(node):
-                                    for part in node.model_response.parts:
-                                        if isinstance(part, ToolCallPart):
-                                            pending_tool_calls.append((
-                                                part.tool_name,
-                                                part.args,
-                                                part.tool_call_id,
-                                            ))
-                                            args_str = str(part.args)[:1000] if part.args else ""
-                                            print(
-                                                f"\033[97;48;5;172m⚙️ [Tool Exec - Start]\033[0m {part.tool_name}({args_str})",
-                                                flush=True,
-                                            )
+                            elif Agent.is_end_node(node):
+                                if pending_tool_calls:
+                                    try:
+                                        all_msgs = run.all_messages()
+                                        for msg in all_msgs:
+                                            if isinstance(msg, ModelRequest):
+                                                for part in msg.parts:
+                                                    if isinstance(part, ToolReturnPart):
+                                                        for tool_name, args, call_id in list(pending_tool_calls):
+                                                            if call_id == part.tool_call_id:
+                                                                turn_logger.log_tool_exec(
+                                                                    tool_name,
+                                                                    args,
+                                                                    call_id,
+                                                                    result=part.content,
+                                                                )
+                                                                args_str = str(args)[:1000] if args else ""
+                                                                print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
+                                                                if gcs_audit_logger:
+                                                                    await gcs_audit_logger.log("tool_call", {
+                                                                        "tool": tool_name,
+                                                                        "args_preview": args_str,
+                                                                    })
+                                                                pending_tool_calls.remove((tool_name, args, call_id))
+                                                                break
+                                    except Exception:
+                                        pass
+                                if verbose:
+                                    print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:1000]}")
 
-                                elif Agent.is_end_node(node):
-                                    if pending_tool_calls:
-                                        try:
-                                            all_msgs = run.all_messages()
-                                            for msg in all_msgs:
-                                                if isinstance(msg, ModelRequest):
-                                                    for part in msg.parts:
-                                                        if isinstance(part, ToolReturnPart):
-                                                            for tool_name, args, call_id in list(pending_tool_calls):
-                                                                if call_id == part.tool_call_id:
-                                                                    turn_logger.log_tool_exec(
-                                                                        tool_name,
-                                                                        args,
-                                                                        call_id,
-                                                                        result=part.content,
-                                                                    )
-                                                                    args_str = str(args)[:1000] if args else ""
-                                                                    print(f"\033[97;48;5;166m⚙️ [Tool Exec] {tool_name}({args_str})\033[0m")
-                                                                    if gcs_audit_logger:
-                                                                        await gcs_audit_logger.log("tool_call", {
-                                                                            "tool": tool_name,
-                                                                            "args_preview": args_str,
-                                                                        })
-                                                                    pending_tool_calls.remove((tool_name, args, call_id))
-                                                                    break
-                                        except Exception:
-                                            pass
-                                    if verbose:
-                                        print(f"\n\033[48;5;125mVERBOSE> ✅ [is_end_node]\033[0m {str(node.data)[:1000]}")
-
-                        except asyncio.CancelledError:
-                            cancelled = True
-                            logger.info("Turn cancelled by user (Ctrl+C)")
-                            return
-
-                        except Exception as e:
-                            if _is_stream_connection_error(e):
-                                transport_failed = True
-                                logger.warning(
-                                    "Recoverable stream transport error inside agent.iter(); "
-                                    "returning to REPL: %s",
-                                    e,
-                                    exc_info=True,
-                                )
-                                _print_stream_connection_error(e)
-                                return
-                            raise
-
-                        finally:
-                            await _finalize_turn(
-                                run,
-                                message_history,
-                                session_usage,
-                                cancelled or transport_failed,
-                                gcs_audit_logger,
-                                verbose,
-                                turn_logger,
-                            )
-
-                except asyncio.CancelledError:
-                    cancelled = True
-                    logger.info("Turn cancelled before/around agent.iter() setup")
-                    return
-
-                except Exception as e:
-                    if _is_stream_connection_error(e):
-                        transport_failed = True
-                        logger.warning(
-                            "Recoverable stream transport error around agent.iter(); "
-                            "returning to REPL: %s",
-                            e,
-                            exc_info=True,
+                    # ── Inner handlers: set flags for _finalize_turn, then re-raise.
+                    #    All logging/user-messaging happens at the OUTER task boundary.
+                    except (asyncio.CancelledError, anyio.ClosedResourceError):
+                        cancelled = True
+                        raise
+                    except Exception as e:
+                        if _is_stream_connection_error(e):
+                            transport_failed = True
+                        raise
+                    finally:
+                        await _finalize_turn(
+                            run,
+                            message_history,
+                            session_usage,
+                            cancelled or transport_failed,
+                            gcs_audit_logger,
+                            verbose,
+                            turn_logger,
                         )
-                        _print_stream_connection_error(e)
-                        return
-                    raise
 
             task = asyncio.ensure_future(_run())
 
@@ -680,20 +680,18 @@ async def run_repl(
                 cancelled = True
                 task.cancel()
 
+            # ── Outer handler: single authoritative site for all exceptions.
             loop.add_signal_handler(signal.SIGINT, _cancel, None)
             try:
                 await task
-            except anyio.ClosedResourceError:
+            except (asyncio.CancelledError, anyio.ClosedResourceError):
                 cancelled = True
-                logger.info(
-                    "Suppressed anyio.ClosedResourceError during cancellation; returning to REPL"
-                )
+                logger.info("Turn cancelled by user (Ctrl+C)")
             except Exception as e:
                 if _is_stream_connection_error(e):
                     transport_failed = True
                     logger.warning(
-                        "Recoverable stream transport error at task boundary; "
-                        "returning to REPL: %s",
+                        "Recoverable stream transport error; returning to REPL: %s",
                         e,
                         exc_info=True,
                     )
