@@ -29,7 +29,7 @@ _KAFKA_VALUE_FLAGS = {
     "--max-messages", "--timeout", "--partition", "--offset",
     "--consumer-property", "--consumer.config", "--property",
     "--formatter", "--key-deserializer", "--value-deserializer",
-    "--group-protocol", "--share-group",
+    "--group-protocol",
     "--replication-factor", "--partitions", "--config",
     "--replica-assignment", "--if-config",
     "--members", "--state", "--verbose",
@@ -129,13 +129,6 @@ DEFAULT_POLICY: dict = {
             "max_timeout_sec": 120,
             "max_output_bytes": 10485760,
         },
-        "kafka-console-share-consumer": {
-            "enabled": True,
-            "allowed_bootstrap_servers": [],
-            "allowed_topics": [],
-            "max_timeout_sec": 120,
-            "max_output_bytes": 10485760,
-        },
         "kafka-consumer-groups": {
             "enabled": True,
             "allowed_bootstrap_servers": [],
@@ -156,12 +149,6 @@ DEFAULT_POLICY: dict = {
             "max_timeout_sec": 30,
             "max_output_bytes": 1048576,
         },
-        "kafka-metadata-quorum": {
-            "enabled": True,
-            "allowed_bootstrap_servers": [],
-            "max_timeout_sec": 30,
-            "max_output_bytes": 1048576,
-        },
         "kafka-replica-verification": {
             "enabled": True,
             "allowed_bootstrap_servers": [],
@@ -177,13 +164,6 @@ DEFAULT_POLICY: dict = {
             "max_output_bytes": 1048576,
         },
         "kafka-verifiable-consumer": {
-            "enabled": True,
-            "allowed_bootstrap_servers": [],
-            "allowed_topics": [],
-            "max_timeout_sec": 120,
-            "max_output_bytes": 10485760,
-        },
-        "kafka-verifiable-share-consumer": {
             "enabled": True,
             "allowed_bootstrap_servers": [],
             "allowed_topics": [],
@@ -500,7 +480,7 @@ class PolicyEngine:
 
         # Bounded message requirement for consumers
         if policy.get("require_bounded", False):
-            if tool in ("kafka-console-consumer", "kafka-console-share-consumer"):
+            if tool in ("kafka-console-consumer",):
                 if "--max-messages" not in argv:
                     return {
                         "allowed": False,

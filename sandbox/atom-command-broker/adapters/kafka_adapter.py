@@ -9,9 +9,7 @@ from .base import BaseAdapter
 # Kafka tools that are consumer-like (long-running, support streaming)
 _CONSUMER_TOOLS = {
     "kafka-console-consumer",
-    "kafka-console-share-consumer",
     "kafka-verifiable-consumer",
-    "kafka-verifiable-share-consumer",
 }
 
 # Kafka tools that are short metadata queries (always buffered)
@@ -20,7 +18,6 @@ _METADATA_TOOLS = {
     "kafka-consumer-groups",
     "kafka-get-offsets",
     "kafka-log-dirs",
-    "kafka-metadata-quorum",
     "kafka-topics",
 }
 
@@ -138,15 +135,12 @@ class KafkaToolAdapter(BaseAdapter):
         descriptions = {
             "kafka-broker-api-versions": "Query Kafka broker API versions",
             "kafka-console-consumer": "Consume messages from a Kafka topic",
-            "kafka-console-share-consumer": "Consume messages via Kafka share groups",
             "kafka-consumer-groups": "List, describe, or manage Kafka consumer groups",
             "kafka-get-offsets": "Get Kafka topic partition offsets",
             "kafka-log-dirs": "Query Kafka broker log directories",
-            "kafka-metadata-quorum": "Query Kafka metadata quorum info",
             "kafka-replica-verification": "Verify Kafka replica consistency",
             "kafka-topics": "List, describe, create, delete, or alter Kafka topics",
             "kafka-verifiable-consumer": "Verifiable Kafka consumer for testing",
-            "kafka-verifiable-share-consumer": "Verifiable Kafka share consumer for testing",
         }
         return descriptions.get(self._tool_name, f"{self._tool_name} via broker")
 

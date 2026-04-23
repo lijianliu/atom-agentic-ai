@@ -85,13 +85,6 @@
       "max_timeout_sec": 120,
       "max_output_bytes": 10485760
     },
-    "kafka-console-share-consumer": {
-      "enabled": true,
-      "allowed_bootstrap_servers": [],
-      "allowed_topics": [],
-      "max_timeout_sec": 120,
-      "max_output_bytes": 10485760
-    },
     "kafka-consumer-groups": {
       "enabled": true,
       "allowed_bootstrap_servers": [],
@@ -112,12 +105,6 @@
       "max_timeout_sec": 30,
       "max_output_bytes": 1048576
     },
-    "kafka-metadata-quorum": {
-      "enabled": true,
-      "allowed_bootstrap_servers": [],
-      "max_timeout_sec": 30,
-      "max_output_bytes": 1048576
-    },
     "kafka-replica-verification": {
       "enabled": true,
       "allowed_bootstrap_servers": [],
@@ -133,13 +120,6 @@
       "max_output_bytes": 1048576
     },
     "kafka-verifiable-consumer": {
-      "enabled": true,
-      "allowed_bootstrap_servers": [],
-      "allowed_topics": [],
-      "max_timeout_sec": 120,
-      "max_output_bytes": 10485760
-    },
-    "kafka-verifiable-share-consumer": {
       "enabled": true,
       "allowed_bootstrap_servers": [],
       "allowed_topics": [],

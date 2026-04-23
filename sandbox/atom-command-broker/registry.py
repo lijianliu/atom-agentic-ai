@@ -13,6 +13,11 @@ logger = logging.getLogger("atom-command-broker.registry")
 
 # ---------------------------------------------------------------------------
 # Well-known executable locations to search
+#
+# Search order matters: entries are tried first-to-last and the first
+# existing executable wins.  For Kafka tools the Bigtop distro package
+# provides both /usr/bin wrappers (which call bigtop-detect-javahome to
+# select the correct JDK) and the underlying scripts at /usr/lib/kafka/bin.
 # ---------------------------------------------------------------------------
 _SEARCH_PATHS = {
     "gsutil": [
@@ -40,57 +45,42 @@ _SEARCH_PATHS = {
     "kafka-broker-api-versions": [
         "/usr/bin/kafka-broker-api-versions",
         "/usr/bin/kafka-broker-api-versions.sh",
-        "/opt/kafka/bin/kafka-broker-api-versions.sh",
+        "/usr/lib/kafka/bin/kafka-broker-api-versions.sh",
     ],
     "kafka-console-consumer": [
         "/usr/bin/kafka-console-consumer",
         "/usr/bin/kafka-console-consumer.sh",
-        "/opt/kafka/bin/kafka-console-consumer.sh",
-    ],
-    "kafka-console-share-consumer": [
-        "/usr/bin/kafka-console-share-consumer",
-        "/usr/bin/kafka-console-share-consumer.sh",
-        "/opt/kafka/bin/kafka-console-share-consumer.sh",
+        "/usr/lib/kafka/bin/kafka-console-consumer.sh",
     ],
     "kafka-consumer-groups": [
         "/usr/bin/kafka-consumer-groups",
         "/usr/bin/kafka-consumer-groups.sh",
-        "/opt/kafka/bin/kafka-consumer-groups.sh",
+        "/usr/lib/kafka/bin/kafka-consumer-groups.sh",
     ],
     "kafka-get-offsets": [
         "/usr/bin/kafka-get-offsets",
         "/usr/bin/kafka-get-offsets.sh",
-        "/opt/kafka/bin/kafka-get-offsets.sh",
+        "/usr/lib/kafka/bin/kafka-get-offsets.sh",
     ],
     "kafka-log-dirs": [
         "/usr/bin/kafka-log-dirs",
         "/usr/bin/kafka-log-dirs.sh",
-        "/opt/kafka/bin/kafka-log-dirs.sh",
-    ],
-    "kafka-metadata-quorum": [
-        "/usr/bin/kafka-metadata-quorum",
-        "/usr/bin/kafka-metadata-quorum.sh",
-        "/opt/kafka/bin/kafka-metadata-quorum.sh",
+        "/usr/lib/kafka/bin/kafka-log-dirs.sh",
     ],
     "kafka-replica-verification": [
         "/usr/bin/kafka-replica-verification",
         "/usr/bin/kafka-replica-verification.sh",
-        "/opt/kafka/bin/kafka-replica-verification.sh",
+        "/usr/lib/kafka/bin/kafka-replica-verification.sh",
     ],
     "kafka-topics": [
         "/usr/bin/kafka-topics",
         "/usr/bin/kafka-topics.sh",
-        "/opt/kafka/bin/kafka-topics.sh",
+        "/usr/lib/kafka/bin/kafka-topics.sh",
     ],
     "kafka-verifiable-consumer": [
         "/usr/bin/kafka-verifiable-consumer",
         "/usr/bin/kafka-verifiable-consumer.sh",
-        "/opt/kafka/bin/kafka-verifiable-consumer.sh",
-    ],
-    "kafka-verifiable-share-consumer": [
-        "/usr/bin/kafka-verifiable-share-consumer",
-        "/usr/bin/kafka-verifiable-share-consumer.sh",
-        "/opt/kafka/bin/kafka-verifiable-share-consumer.sh",
+        "/usr/lib/kafka/bin/kafka-verifiable-consumer.sh",
     ],
 }
 
