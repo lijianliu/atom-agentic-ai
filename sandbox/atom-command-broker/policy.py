@@ -20,6 +20,23 @@ _HADOOP_READ_ONLY_FS_SUBCOMMANDS = {
 }
 
 # ---------------------------------------------------------------------------
+# Kafka flags that take a value argument (--flag <value>).
+# Used to distinguish value-bearing flags from standalone operation flags
+# like --list, --describe, --delete, etc.
+# ---------------------------------------------------------------------------
+_KAFKA_VALUE_FLAGS = {
+    "--bootstrap-server", "--command-config", "--topic", "--group",
+    "--max-messages", "--timeout", "--partition", "--offset",
+    "--consumer-property", "--consumer.config", "--property",
+    "--formatter", "--key-deserializer", "--value-deserializer",
+    "--group-protocol", "--share-group",
+    "--replication-factor", "--partitions", "--config",
+    "--replica-assignment", "--if-config",
+    "--members", "--state", "--verbose",
+    "--broker-list",
+}
+
+# ---------------------------------------------------------------------------
 # Default built-in policy (used when no file is provided)
 # ---------------------------------------------------------------------------
 DEFAULT_POLICY: dict = {
@@ -119,6 +136,14 @@ DEFAULT_POLICY: dict = {
             "max_timeout_sec": 120,
             "max_output_bytes": 10485760,
         },
+        "kafka-consumer-groups": {
+            "enabled": True,
+            "allowed_bootstrap_servers": [],
+            "allowed_operations": ["--list", "--describe"],
+            "allowed_groups": [],
+            "max_timeout_sec": 30,
+            "max_output_bytes": 1048576,
+        },
         "kafka-get-offsets": {
             "enabled": True,
             "allowed_bootstrap_servers": [],
@@ -142,6 +167,14 @@ DEFAULT_POLICY: dict = {
             "allowed_bootstrap_servers": [],
             "max_timeout_sec": 120,
             "max_output_bytes": 10485760,
+        },
+        "kafka-topics": {
+            "enabled": True,
+            "allowed_bootstrap_servers": [],
+            "allowed_operations": ["--list", "--describe"],
+            "allowed_topics": [],
+            "max_timeout_sec": 30,
+            "max_output_bytes": 1048576,
         },
         "kafka-verifiable-consumer": {
             "enabled": True,
@@ -419,6 +452,32 @@ class PolicyEngine:
                     "reason": f"Bootstrap server '{bs}' not in allowed list",
                 }
 
+        # Operation restriction for tools like kafka-topics /
+        # kafka-consumer-groups (--list, --describe, --create, etc.).
+        #
+        # When allowed_operations is set, we use allowlist-only logic:
+        # any standalone flag (i.e. a --flag that is not a known
+        # value-bearing option like --bootstrap-server <val>) that is
+        # NOT in the allowed list gets rejected.  This is fail-closed —
+        # even future Kafka flags we haven't heard of will be blocked
+        # unless explicitly permitted.
+        allowed_ops = policy.get("allowed_operations", [])
+        if allowed_ops:
+            # Walk argv, skipping value-bearing flags and their values
+            standalone_flags = self._extract_standalone_flags(argv)
+            for flag in standalone_flags:
+                if flag == "--help":
+                    # Always allow --help
+                    continue
+                if flag not in allowed_ops:
+                    return {
+                        "allowed": False,
+                        "reason": (
+                            f"{tool} flag '{flag}' not allowed by policy. "
+                            f"Permitted operations: {allowed_ops}"
+                        ),
+                    }
+
         # Topic restriction
         allowed_topics = policy.get("allowed_topics", [])
         if allowed_topics:
@@ -473,3 +532,32 @@ class PolicyEngine:
             if a.startswith(flag + "="):
                 return a.split("=", 1)[1]
         return None
+
+    @staticmethod
+    def _extract_standalone_flags(argv: list[str]) -> list[str]:
+        """Extract standalone flags from argv, skipping value-bearing flags.
+
+        A standalone flag is a --flag that does NOT take a value argument
+        (e.g. --list, --describe, --delete, --force-commit).  Value-bearing
+        flags like --bootstrap-server <host:port> are skipped along with
+        their value.  Flags using --key=value syntax are also skipped.
+
+        This lets us catch ANY unknown operation flag — present or future —
+        without maintaining a hardcoded detection list.
+        """
+        standalone = []
+        i = 0
+        while i < len(argv):
+            arg = argv[i]
+            if arg.startswith("--"):
+                if "=" in arg:
+                    # --key=value form → value-bearing, skip
+                    pass
+                elif arg in _KAFKA_VALUE_FLAGS:
+                    # Known value-bearing flag → skip it and its value
+                    i += 1  # skip the next arg (the value)
+                else:
+                    # Standalone flag (operation or boolean flag)
+                    standalone.append(arg)
+            i += 1
+        return standalone

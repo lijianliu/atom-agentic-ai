@@ -92,6 +92,14 @@
       "max_timeout_sec": 120,
       "max_output_bytes": 10485760
     },
+    "kafka-consumer-groups": {
+      "enabled": true,
+      "allowed_bootstrap_servers": [],
+      "allowed_operations": ["--list", "--describe"],
+      "allowed_groups": [],
+      "max_timeout_sec": 30,
+      "max_output_bytes": 1048576
+    },
     "kafka-get-offsets": {
       "enabled": true,
       "allowed_bootstrap_servers": [],
@@ -115,6 +123,14 @@
       "allowed_bootstrap_servers": [],
       "max_timeout_sec": 120,
       "max_output_bytes": 10485760
+    },
+    "kafka-topics": {
+      "enabled": true,
+      "allowed_bootstrap_servers": [],
+      "allowed_operations": ["--list", "--describe"],
+      "allowed_topics": [],
+      "max_timeout_sec": 30,
+      "max_output_bytes": 1048576
     },
     "kafka-verifiable-consumer": {
       "enabled": true,
