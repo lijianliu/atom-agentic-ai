@@ -13,9 +13,10 @@ from .slack_client import SlackClient
 
 # GCS audit logger — imported lazily so bot still works without google-cloud-storage
 try:
-    from gcs_audit_logger import GCSLogger
+    from gcs_audit_logger import GCSLogger, set_active_gcs_logger
 except ImportError:
     GCSLogger = None  # type: ignore[misc,assignment]
+    set_active_gcs_logger = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,9 @@ class SlackBot:
         if GCSLogger is not None:
             self._gcs_logger = GCSLogger.from_env()
             if self._gcs_logger:
+                # Register at module level so upload_output_file (in
+                # local_tools.py) can find the active GCS logger instance.
+                set_active_gcs_logger(self._gcs_logger)
                 logger.info("GCS audit logging enabled → %s", self._gcs_logger.gcs_uri)
             else:
                 logger.info("GCS audit logging disabled (ATOM_AUDIT_LOG_GCS_PATH not set)")
