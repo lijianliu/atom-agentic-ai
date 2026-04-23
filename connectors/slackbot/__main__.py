@@ -16,8 +16,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Add agent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "agent"))
+# Add project root first (so "agent" resolves as package), then agent dir
+_PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+_AGENT_DIR = str(Path(__file__).parent.parent.parent / "agent")
+if _AGENT_DIR not in sys.path:
+    sys.path.append(_AGENT_DIR)  # append so project root wins for "agent"
 from logging_config import LOG_DIR
 
 from .bot import SlackBot
