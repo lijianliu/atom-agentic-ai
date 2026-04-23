@@ -34,8 +34,10 @@ import mimetypes
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -69,6 +71,15 @@ FETCH_TOKEN_RETRY_BACKOFF = 2 # base seconds for exponential backoff
 # Register .jsonl — not in Python's default mimetypes database.
 mimetypes.add_type("application/jsonl", ".jsonl")
 
+# ---------------------------------------------------------------------------
+# DEBUG: Log module identity at import time to detect dual-import issues
+# ---------------------------------------------------------------------------
+_THIS_MODULE_ID = id(sys.modules.get(__name__))
+logger.warning(
+    "DEBUG_IMPORT gcs_audit_logger loaded: __name__=%r, module_id=%d, "
+    "file=%s, id(_active_gcs_logger_container)=will_log_after_def",
+    __name__, _THIS_MODULE_ID, __file__,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -572,11 +583,52 @@ def set_active_gcs_logger(gcs_logger: GCSLogger | None) -> None:
     """Set the module-level active GCS logger (called by repl.py)."""
     global _active_gcs_logger
     _active_gcs_logger = gcs_logger
+    # DEBUG: trace who is setting and on which module copy
+    caller_frame = traceback.extract_stack(limit=2)[0]
+    gcs_mod = sys.modules.get(__name__)
+    gcs_mod_id = id(gcs_mod) if gcs_mod else 0
+    logger.warning(
+        "DEBUG_GCS set_active_gcs_logger: value=%s (id=%d), "
+        "module __name__=%r, module_id=%d, "
+        "caller=%s:%d in %s, "
+        "all gcs_audit_logger modules in sys.modules=%s",
+        type(gcs_logger).__name__ if gcs_logger else "None",
+        id(gcs_logger) if gcs_logger else 0,
+        __name__, gcs_mod_id,
+        caller_frame.filename, caller_frame.lineno, caller_frame.name,
+        {k: id(v) for k, v in sys.modules.items() if "gcs_audit_logger" in k},
+    )
 
 
 def get_active_gcs_logger() -> GCSLogger | None:
     """Get the module-level active GCS logger (called by local_tools.py)."""
-    return _active_gcs_logger
+    result = _active_gcs_logger
+    # DEBUG: trace who is reading and from which module copy
+    caller_frame = traceback.extract_stack(limit=2)[0]
+    gcs_mod = sys.modules.get(__name__)
+    gcs_mod_id = id(gcs_mod) if gcs_mod else 0
+    logger.warning(
+        "DEBUG_GCS get_active_gcs_logger: value=%s (id=%d), "
+        "module __name__=%r, module_id=%d, "
+        "caller=%s:%d in %s, "
+        "all gcs_audit_logger modules in sys.modules=%s",
+        type(result).__name__ if result else "None",
+        id(result) if result else 0,
+        __name__, gcs_mod_id,
+        caller_frame.filename, caller_frame.lineno, caller_frame.name,
+        {k: id(v) for k, v in sys.modules.items() if "gcs_audit_logger" in k},
+    )
+    return result
+
+
+# DEBUG: log the final state of this module after definition
+logger.warning(
+    "DEBUG_IMPORT gcs_audit_logger fully loaded: __name__=%r, module_id=%d, "
+    "_active_gcs_logger=%s, all gcs keys in sys.modules=%s",
+    __name__, id(sys.modules.get(__name__)),
+    _active_gcs_logger,
+    [k for k in sys.modules if "gcs_audit_logger" in k],
+)
 
 
 # ---------------------------------------------------------------------------

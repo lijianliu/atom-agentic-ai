@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,12 @@ if TYPE_CHECKING:
     from pydantic_ai import RunContext
 
 logger = get_logger(__name__)
+
+# DEBUG: log module identity at import time
+logger.warning(
+    "DEBUG_IMPORT local_tools loaded: __name__=%r, module_id=%d, file=%s",
+    __name__, id(sys.modules.get(__name__)), __file__,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -242,6 +249,31 @@ def register_upload_tool(agent: Agent, workspace: Path | None = None) -> None:
         )
 
         try:
+            # DEBUG: log which module we are importing from and sys.path state
+            import gcs_audit_logger as _gcs_mod_direct
+            logger.warning(
+                "DEBUG_UPLOAD import check: 'import gcs_audit_logger' resolved to "
+                "module_id=%d, file=%s, __name__=%r, sys.path=%s",
+                id(_gcs_mod_direct), getattr(_gcs_mod_direct, '__file__', '?'),
+                _gcs_mod_direct.__name__,
+                sys.path,
+            )
+
+            # Also check if agent.gcs_audit_logger exists as a separate module
+            agent_gcs_mod = sys.modules.get("agent.gcs_audit_logger")
+            bare_gcs_mod = sys.modules.get("gcs_audit_logger")
+            logger.warning(
+                "DEBUG_UPLOAD sys.modules check: "
+                "agent.gcs_audit_logger=%s (id=%d), "
+                "gcs_audit_logger=%s (id=%d), "
+                "SAME=%s",
+                "present" if agent_gcs_mod else "MISSING",
+                id(agent_gcs_mod) if agent_gcs_mod else 0,
+                "present" if bare_gcs_mod else "MISSING",
+                id(bare_gcs_mod) if bare_gcs_mod else 0,
+                agent_gcs_mod is bare_gcs_mod if (agent_gcs_mod and bare_gcs_mod) else "N/A",
+            )
+
             from gcs_audit_logger import get_active_gcs_logger, gcs_uri_to_web_url
 
             gcs_logger = get_active_gcs_logger()
