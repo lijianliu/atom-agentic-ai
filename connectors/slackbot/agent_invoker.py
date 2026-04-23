@@ -60,9 +60,11 @@ class AgentInvoker:
         self,
         use_openai: bool = False,
         mcp_url: str = "http://127.0.0.1:9100/sse",
+        system_prompt_file: Path | None = None,
     ) -> None:
         self.use_openai = use_openai
         self.mcp_url = mcp_url
+        self.system_prompt_file = system_prompt_file
         self._agent: Agent | None = None
         self._agent_entered = False
         # Per-thread locks to serialise concurrent requests on the same
@@ -79,12 +81,13 @@ class AgentInvoker:
         self._agent = build_agent(
             use_openai=self.use_openai,
             mcp_url=self.mcp_url,
+            system_prompt_file=self.system_prompt_file,
         )
         await self._agent.__aenter__()
         self._agent_entered = True
         logger.info(
-            "Agent built & context opened (openai=%s, mcp=%s)",
-            self.use_openai, self.mcp_url,
+            "Agent built & context opened (openai=%s, mcp=%s, system_prompt=%s)",
+            self.use_openai, self.mcp_url, self.system_prompt_file,
         )
 
     # ------------------------------------------------------------------

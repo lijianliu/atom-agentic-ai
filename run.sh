@@ -115,6 +115,7 @@ COMMON_FLAGS=""
 [ "$VERBOSE" = true ]    && COMMON_FLAGS="$COMMON_FLAGS --verbose"
 [ "$USE_OPENAI" = true ] && COMMON_FLAGS="$COMMON_FLAGS --openai"
 [ "$ROOT_MODE" = true ]  && COMMON_FLAGS="$COMMON_FLAGS --root"
+[ -n "$SYSTEM_PROMPT" ]  && COMMON_FLAGS="$COMMON_FLAGS --system-prompt $SYSTEM_PROMPT"
 
 # Use the venv from SCRIPT_DIR, but run in user's CWD
 PYTHON="${SCRIPT_DIR}/.venv/bin/python"
@@ -124,13 +125,13 @@ if [ "$SLACKBOT" = true ]; then
   SLACKBOT_FLAGS="--mcp-url ${MCP_URL}${COMMON_FLAGS}"
   echo "🤖 Starting Slack Bot Connector..."
   echo "   MCP URL: ${MCP_URL}"
+  [ -n "$SYSTEM_PROMPT" ] && echo "   📝 System prompt: ${SYSTEM_PROMPT}"
   (cd "${SCRIPT_DIR}" && $PYTHON -m connectors.slackbot $SLACKBOT_FLAGS)
 else
   # ---- Run AtomAI interactive REPL ----
   AGENT_FLAGS="${COMMON_FLAGS}"
   [ "$ROOT_MODE" = false ] && AGENT_FLAGS="--mcp-url ${MCP_URL}${AGENT_FLAGS}"
   [ -n "$SESSION_FILE" ] && AGENT_FLAGS="$AGENT_FLAGS --session $SESSION_FILE"
-  [ -n "$SYSTEM_PROMPT" ] && AGENT_FLAGS="$AGENT_FLAGS --system-prompt $SYSTEM_PROMPT"
   if [ "$ROOT_MODE" = true ]; then
     echo "🚀 Starting AtomAI (ROOT MODE — local tools)..."
   else

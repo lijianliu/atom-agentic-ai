@@ -5,6 +5,7 @@ import logging
 import signal
 import socket
 import sys
+from pathlib import Path
 from typing import Any
 
 from .agent_invoker import AgentInvoker
@@ -63,16 +64,24 @@ def _format_footer(
 class SlackBot:
     """Slack bot that monitors channels and responds using the Atom agent."""
 
-    def __init__(self, config: SlackBotConfig) -> None:
+    def __init__(
+        self,
+        config: SlackBotConfig,
+        system_prompt_file: Path | None = None,
+    ) -> None:
         self.config = config
         logger.info("Config: %s", config)
         self.client = SlackClient(config.bot_token)
         self.invoker = AgentInvoker(
             use_openai=config.use_openai,
             mcp_url=config.mcp_url,
+            system_prompt_file=system_prompt_file,
         )
         self._running = False
         self._channel_ids: list[str] = []
+
+        if system_prompt_file:
+            logger.info("System prompt file: %s", system_prompt_file)
 
         # GCS audit logging (None if env var not set or SDK not installed)
         self._gcs_logger = None

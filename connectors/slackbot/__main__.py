@@ -4,6 +4,7 @@ Usage:
     python -m connectors.slackbot -v
     python -m connectors.slackbot --channels C0AG0DYHLA1 -v
     python -m connectors.slackbot --openai -v
+    python -m connectors.slackbot --system-prompt ~/my_prompt.md -v
 """
 
 import argparse
@@ -109,6 +110,10 @@ Example:
         help="MCP server SSE URL (default: from MCP_URL env or http://127.0.0.1:9100/sse)",
     )
     parser.add_argument(
+        "--system-prompt", type=Path, default=None, metavar="FILE",
+        help="Path to custom system prompt file (overrides default)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Enable verbose logging",
     )
@@ -139,7 +144,7 @@ Example:
         config.mcp_url = args.mcp_url
 
     # Create and run bot
-    bot = SlackBot(config)
+    bot = SlackBot(config, system_prompt_file=args.system_prompt)
 
     try:
         asyncio.run(bot.run())
